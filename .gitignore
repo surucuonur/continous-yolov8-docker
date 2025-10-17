@@ -1,0 +1,19 @@
+# Ignore everything by default
+*
+
+# But don't ignore these specific files/folders
+!docker-compose.yml
+!dockerfile
+!inference.py
+!requirements.txt
+!start.sh
+!.gitignore
+!weights/
+!Input/
+!output/
+!git-commands.txt
+
+# Ignore common files you don't want
+.DS_Store
+*.log
+*.tmp

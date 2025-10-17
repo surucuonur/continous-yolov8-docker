@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  yolov8-inference:
+    build: .
+    container_name: yolov8-inference
+    runtime: nvidia
+    volumes:
+      - ./input:/app/input:ro
+      - ./output:/app/output
+      - ./weights:/app/weights:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+    command: >
+      --weights /app/weights/best.pt
+      --source /app/input
+      --conf 0.78
+      --device auto
+    restart: unless-stopped

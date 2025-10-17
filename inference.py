@@ -1,9 +1,14 @@
 """
-YOLOv8 Inference Script - Docker Version with Auto-Detection
-Monitors input directory and automatically processes new images/videos
-Modified for Docker container usage with volume mounts
-Enhanced with CUDA GPU detection and usage
+YOLOv8 Inference Script - Simplified Version
+Clean separation of Model and FileWatcher classes for easy building
+
+#TODO:
+    1) Model to Json Payload
+    2) Send Payload to SignalR
+    3) Image processing in parallel (with and without GPU)
+    4) FileWatcher
 """
+#%%
 from ultralytics import YOLO
 import argparse
 from pathlib import Path
@@ -11,121 +16,64 @@ import os
 import shutil
 from datetime import datetime
 import time
-import hashlib
-import json
-import signal
-import sys
-from threading import Thread, Event
-import time
+import requests
 import torch
 
-def check_cuda_availability():
-    """Check if CUDA is available and return device info"""
-    if torch.cuda.is_available():
-        device_count = torch.cuda.device_count()
-        current_device = torch.cuda.current_device()
-        device_name = torch.cuda.get_device_name(current_device)
-        memory_total = torch.cuda.get_device_properties(current_device).total_memory / (1024**3)  # GB
-        
-        print(f"🚀 CUDA GPU detected!")
-        print(f"   Device: {device_name}")
-        print(f"   Device ID: {current_device}")
-        print(f"   Total Memory: {memory_total:.1f} GB")
-        print(f"   Available Devices: {device_count}")
-        return True, f"cuda:{current_device}"
-    else:
-        print("💻 CUDA not available, using CPU")
-        return False, "cpu"
+print("Library loaded successfully")
+# print("CUDA available:", torch.cuda.is_available())
+# print("PyTorch version:", torch.__version__)
+# print("CUDA device count:", torch.cuda.device_count())
+# print("CUDA device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+# print("CUDA device memory:", torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024**3), "GB")
+# print("CUDA device memory free:", torch.cuda.get_device_properties(torch.cuda.current_device()).free_memory / (1024**3), "GB")
+# print("CUDA device memory used:", torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024**3) - torch.cuda.get_device_properties(torch.cuda.current_device()).free_memory / (1024**3), "GB")
 
-class FileWatcher:
-    """Monitors directory for new files and processes them automatically"""
+#%%
+
+class Model:
+    """YOLOv8 Model class with GPU/CPU detection and processing"""
     
-    def __init__(self, model, watch_dir, output_base, conf_threshold=0.25, poll_interval=1.0, device="cpu"):
-        self.model = model
-        self.watch_dir = Path(watch_dir)
-        self.output_base = output_base
+    def __init__(self, weights_path, conf_threshold=0.25):
+        self.weights_path = weights_path
         self.conf_threshold = conf_threshold
-        self.poll_interval = poll_interval
-        self.device = device
-        self.processed_files = self.load_processed_files()
-        self.stop_event = Event()
+        self.device = self._detect_device()
+        self.model = self._load_model()
         
-        # Move model to device if CUDA is available
-        if device != "cpu":
-            print(f"📱 Moving model to {device}")
-            self.model.to(device)
-        
-    def load_processed_files(self):
-        """Load list of already processed files"""
-        cache_file = Path(self.output_base) / '.processed_files.json'
-        if cache_file.exists():
-            try:
-                with open(cache_file, 'r') as f:
-                    return set(json.load(f))
-            except:
-                return set()
-        return set()
+    def _detect_device(self):
+        """Detect and configure the best available device (GPU first, then CPU)"""
+        if torch.cuda.is_available():
+            device_count = torch.cuda.device_count()
+            current_device = torch.cuda.current_device()
+            device_name = torch.cuda.get_device_name(current_device)
+            memory_total = torch.cuda.get_device_properties(current_device).total_memory / (1024**3)  # GB
+            
+            print(f"🚀 CUDA GPU detected!")
+            print(f"   Device: {device_name}")
+            print(f"   Device ID: {current_device}")
+            print(f"   Total Memory: {memory_total:.1f} GB")
+            print(f"   Available Devices: {device_count}")
+            return f"cuda:{current_device}"
+        else:
+            print("💻 CUDA not available, using CPU")
+            return "cpu"
     
-    def save_processed_files(self):
-        """Save list of processed files"""
-        cache_file = Path(self.output_base) / '.processed_files.json'
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_file, 'w') as f:
-            json.dump(list(self.processed_files), f)
-    
-    def get_file_hash(self, filepath):
-        """Generate hash of file to detect changes"""
-        hash_md5 = hashlib.md5()
+    def _load_model(self):
+        """Load the YOLOv8 model"""
+        print(f"🚀 Loading YOLOv8 model from {self.weights_path}...")
         try:
-            with open(filepath, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
-            return hash_md5.hexdigest()
-        except:
-            return None
+            model = YOLO(self.weights_path)
+            print("✅ Model loaded successfully!")
+            return model
+        except Exception as e:
+            print(f"❌ Error loading model: {e}")
+            raise e
     
-    def get_file_id(self, filepath):
-        """Create unique identifier for file"""
-        stat = os.stat(filepath)
-        return f"{filepath}_{stat.st_size}_{stat.st_mtime}"
-    
-    def is_file_stable(self, filepath, stability_time=0.5):
-        """Check if file has stopped being written to"""
-        try:
-            initial_size = os.path.getsize(filepath)
-            time.sleep(stability_time)
-            final_size = os.path.getsize(filepath)
-            return initial_size == final_size
-        except:
-            return False
-    
-    def process_file(self, filepath):
-        """Process a single file"""
-        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] New file detected: {filepath.name}")
-        
-        # Wait for file to be completely written
-        print(f"  Waiting for file to stabilize...")
-        max_wait = 10
-        waited = 0
-        while not self.is_file_stable(filepath) and waited < max_wait:
-            time.sleep(0.5)
-            waited += 0.5
-        
-        # Create timestamp for this specific inference
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create output directories for this file
-        base_dir = os.path.join(self.output_base, f"output_{timestamp}_{filepath.stem}")
-        output_dir = os.path.join(base_dir, "output")
-        label_dir = os.path.join(output_dir, "label")
-        image_dir = os.path.join(output_dir, "image")
-        
-        os.makedirs(label_dir, exist_ok=True)
-        os.makedirs(image_dir, exist_ok=True)
+    def process_file(self, filepath, output_dir):
+        """Process a single file and return results"""
+        print(f"  Processing: {filepath.name} on {self.device}")
         
         try:
-            # Run inference with device specification
-            print(f"  Processing: {filepath.name} on {self.device}")
+            # Run inference
             results = self.model.predict(
                 source=str(filepath),
                 conf=self.conf_threshold,
@@ -138,12 +86,12 @@ class FileWatcher:
                 project=output_dir,
                 name="temp",
                 exist_ok=True,
-                verbose=False,  # Suppress YOLO output
-                device=self.device  # Use specified device
+                verbose=False,
+                device=self.device
             )
             
             # Reorganize output files
-            self.reorganize_results(output_dir, image_dir, label_dir)
+            # self._reorganize_results(output_dir)
             
             # Print detection summary
             for result in results:
@@ -161,206 +109,282 @@ class FileWatcher:
                     for class_name, count in detections.items():
                         print(f"    - {class_name}: {count}")
             
-            print(f"  → Output saved to: {base_dir}")
-            
-            # Mark file as processed
-            file_id = self.get_file_id(filepath)
-            self.processed_files.add(file_id)
-            self.save_processed_files()
+            return results
             
         except Exception as e:
             print(f"  ✗ Error processing {filepath.name}: {str(e)}")
-    
-    def reorganize_results(self, output_dir, image_dir, label_dir):
-        """Reorganize YOLO output files"""
-        temp_dir = os.path.join(output_dir, "temp")
-        
-        if os.path.exists(temp_dir):
-            # Move image files
-            for file in os.listdir(temp_dir):
-                file_path = os.path.join(temp_dir, file)
-                if os.path.isfile(file_path) and file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
-                    shutil.move(file_path, os.path.join(image_dir, file))
-            
-            # Move label files
-            temp_labels = os.path.join(temp_dir, "labels")
-            if os.path.exists(temp_labels):
-                for file in os.listdir(temp_labels):
-                    shutil.move(
-                        os.path.join(temp_labels, file),
-                        os.path.join(label_dir, file)
-                    )
-                os.rmdir(temp_labels)
-            
-            # Clean up temp directory
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-    
-    def scan_directory(self):
-        """Scan directory for new files"""
-        valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.mp4', '.avi', '.mov'}
-        
-        if not self.watch_dir.exists():
-            return []
-        
-        new_files = []
-        for filepath in self.watch_dir.iterdir():
-            if filepath.is_file() and filepath.suffix.lower() in valid_extensions:
-                file_id = self.get_file_id(filepath)
-                if file_id not in self.processed_files:
-                    new_files.append(filepath)
-        
-        return new_files
-    
-    def watch(self):
-        """Main watching loop"""
-        print(f"\n🔍 Monitoring directory: {self.watch_dir}")
-        print(f"📊 Confidence threshold: {self.conf_threshold}")
-        print(f"📁 Output directory: {self.output_base}")
-        print(f"🖥️  Processing device: {self.device}")
-        print(f"\n⏳ Waiting for new images/videos... (Press Ctrl+C to stop)\n")
-        
-        # Process any existing files first
-        initial_files = self.scan_directory()
-        if initial_files:
-            print(f"Found {len(initial_files)} unprocessed file(s) in directory")
-            for filepath in initial_files:
-                if self.stop_event.is_set():
-                    break
-                start_time = time.time()
-                self.process_file(filepath)
-                end_time = time.time()
-                time_ms = (end_time - start_time) * 1000
-                print(f"⏱️  Time taken to process {filepath.name}: {time_ms:.2f} milliseconds")
-        
-        # Monitor for new files
-        while not self.stop_event.is_set():
-            try:
-                new_files = self.scan_directory()
-                for filepath in new_files:
-                    if self.stop_event.is_set():
-                        break
-                    start_time = time.time()
-                    self.process_file(filepath)
-                    end_time = time.time()
-                    time_ms = (end_time - start_time) * 1000
-                    print(f"⏱️  Time taken to process {filepath.name}: {time_ms:.2f} milliseconds")
-                
-                time.sleep(self.poll_interval)
-                
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                print(f"Error in watch loop: {e}")
-                time.sleep(self.poll_interval)
-        
-        print("\n👋 Stopping file watcher...")
-    
-    def stop(self):
-        """Stop the watcher"""
-        self.stop_event.set()
+            raise e
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully"""
-    print("\n📛 Received shutdown signal, cleaning up...")
-    sys.exit(0)
+    def create_label_dict(self, results, threshold=0.80):
+        """Create dictionary of labels with binary detection status"""
+        label_dict = {}
+        
+        # Process each detection from results
+        for r in results:
+            # Get boxes and confidences from tensor
+            boxes = r.boxes
+            
+            # Get class names from results
+            names = r.names
+            
+            # Initialize all possible labels to 0
+            for class_id, name in names.items():
+                if name not in label_dict:
+                    label_dict[name] = 0
+            
+            # Each box contains class_id and confidence
+            for box in boxes:
+                class_id = int(box.cls)
+                confidence = float(box.conf)
+                
+                if confidence >= threshold:
+                    # Get label name from class_id and set to 1
+                    label_name = names[class_id]
+                    label_dict[label_name] = 1
+
+        print(f"📊 PPE Detection Status (threshold={threshold}):")
+        for label, status in label_dict.items():
+            print(f"   {label}: {'✅ Detected' if status else '❌ Not Detected'}")
+            
+        payload = {
+            "Closed_Case": {
+                "Top": {"Expected": 1, "Found": 1},
+                "Bottom": {"Expected": 1, "Found": 1},
+                "Front": {"Expected": 1, "Found": 1},
+                "Back": {"Expected": 1, "Found": 1},
+                "Left_Side": {"Expected": 1, "Found": 1},
+                "Right_Side": {"Expected": 1, "Found": 1},
+                "Empty_Wheel_Well": {"Expected": 1, "Found": label_dict["Empty_Wheel_Well"]},
+                "Foam": {"Expected": 1, "Found": label_dict["Foam"]},
+                "Handle": {"Expected": 2, "Found": label_dict["Handle"]},
+                "Handle_Ribs": {"Expected": 2, "Found": label_dict["Handle_Ribs"]},
+                "Latch": {"Expected": 2, "Found": label_dict["Latch"]},
+                "Latch_Ribs": {"Expected": 2, "Found": label_dict["Latch_Ribs"]},
+                "Wheel_Well_With_Wheel": {"Expected": 2, "Found": label_dict["Wheel_Well_With_Wheel"]},
+                "State": 2
+            }
+        }
+        return payload
+    
+    # def _reorganize_results(self, output_dir):
+    #     """Reorganize YOLO output files into proper structure"""
+    #     temp_dir = os.path.join(output_dir, "temp")
+        
+    #     if os.path.exists(temp_dir):
+    #         # Create subdirectories
+    #         image_dir = os.path.join(output_dir, "image")
+    #         label_dir = os.path.join(output_dir, "label")
+    #         os.makedirs(image_dir, exist_ok=True)
+    #         os.makedirs(label_dir, exist_ok=True)
+            
+    #         # Move image files
+    #         for file in os.listdir(temp_dir):
+    #             file_path = os.path.join(temp_dir, file)
+    #             if os.path.isfile(file_path) and file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+    #                 shutil.move(file_path, os.path.join(image_dir, file))
+            
+    #         # Move label files
+    #         temp_labels = os.path.join(temp_dir, "labels")
+    #         if os.path.exists(temp_labels):
+    #             for file in os.listdir(temp_labels):
+    #                 shutil.move(
+    #                     os.path.join(temp_labels, file),
+    #                     os.path.join(label_dir, file)
+    #                 )
+    #             os.rmdir(temp_labels)
+            
+    #         # Clean up temp directory
+    #         if os.path.exists(temp_dir):
+    #             shutil.rmtree(temp_dir)
+
+
+class FileWatcher:
+    """FileWatcher class for monitoring directories (empty for now)"""
+    
+    def __init__(self):
+        pass
+    
+    # TODO: Implement file watching functionality
+    # This class is intentionally left empty for future implementation
+
+
+    
+class FunctionAppConnector:
+    """
+    Local script to connect to Azure Function App and trigger broadcasts to SignalR
+    """
+    
+    def __init__(self, function_url=None, function_key=None):
+        """
+        Initialize the connector with function app details
+        
+        Args:
+            function_url: Base URL of your function app (e.g., https://your-function-app.azurewebsites.net)
+            function_key: Function key for authentication
+        """
+        import os
+        self.function_url = function_url or os.environ.get("FUNCTION_URL", "https://azu-wu2-funcfrntend-d-01.azurewebsites.net")
+        self.function_key = function_key or os.environ.get("PROCESS_FUNCTION_KEY")
+        if self.function_key:
+            self.function_url = self.function_url.rstrip('/')
+            self.broadcast_endpoint = f"{self.function_url}/api/broadcast?code={self.function_key}"
+        
+    def trigger_broadcast(self, message: str = "Broadcast from local script", data: dict = None) -> dict:
+        """
+        Trigger the broadcast function which will send data to SignalR
+        
+        Args:
+            message: Optional message to include in the broadcast
+            data: Custom data payload to send to SignalR. If not provided, function will fail.
+            
+        Returns:
+            dict: Response from the broadcast function
+        """
+        if not self.function_key:
+            print("❌ Error: PROCESS_FUNCTION_KEY not set!")
+            return {"error": "Function key not set"}
+
+        try:
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "message": message,
+                "data": data
+            }
+            
+            response = requests.post(
+                self.broadcast_endpoint,
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                print("✅ Payload sent successfully!")
+                return response.json()
+            else:
+                error_msg = f"Status {response.status_code}"
+                print(f"❌ Failed to send payload: {error_msg}")
+                return {"error": error_msg, "details": response.text}
+                
+        except Exception as e:
+            print(f"❌ Failed to send payload: {str(e)}")
+            return {"error": str(e)}
+    
+    def listen_and_broadcast(self, interval: int = 5, max_iterations: int = None, data: dict = None):
+        """
+        Continuously listen and trigger broadcasts at specified intervals
+        
+        Args:
+            interval: Time between broadcasts in seconds (default: 5)
+            max_iterations: Maximum number of broadcasts (None for infinite)
+            data: Data payload to send with each broadcast
+        """
+        print(f"Starting continuous broadcast (interval: {interval}s)")
+        
+        iteration = 0
+        try:
+            while True:
+                if max_iterations and iteration >= max_iterations:
+                    print(f"Reached maximum iterations ({max_iterations})")
+                    break
+                
+                iteration += 1
+                timestamp = datetime.now().isoformat()
+                message = f"Broadcast #{iteration} at {timestamp}"
+                
+                result = self.trigger_broadcast(message, data=data)
+                
+                if max_iterations is None or iteration < max_iterations:
+                    time.sleep(interval)
+                    
+        except KeyboardInterrupt:
+            print("\nStopping broadcast (KeyboardInterrupt)")
+        except Exception as e:
+            print(f"Error in broadcast loop: {e}")
+    
+    def test_connection(self) -> bool:
+        """
+        Test the connection to the function app
+        
+        Returns:
+            bool: True if connection is successful
+        """
+        try:
+            health_url = f"{self.function_url}/api/health"
+            response = requests.get(health_url, timeout=10)
+            
+            if response.status_code == 200:
+                print("✓ Connection successful!")
+                return True
+            else:
+                print(f"✗ Connection failed with status {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"✗ Connection test failed: {e}")
+            return False
 
 def main():
-    parser = argparse.ArgumentParser(description='YOLOv8 auto-inference with file monitoring')
+    """Main function demonstrating usage of Model and FileWatcher classes"""
+    parser = argparse.ArgumentParser(description='YOLOv8 simplified inference')
     parser.add_argument('--weights', type=str, default='/app/weights/best.pt',
                         help='Path to weights file (default: /app/weights/best.pt)')
     parser.add_argument('--source', type=str, default='/app/input',
                         help='Directory to monitor (default: /app/input)')
-    parser.add_argument('--conf', type=float, default=0.25,
-                        help='Confidence threshold (default: 0.25)')
+    parser.add_argument('--conf', type=float, default=0.85,
+                        help='Confidence threshold (default: 0.85)')
     parser.add_argument('--output-base', type=str, default='/app/output',
                         help='Base output directory (default: /app/output)')
-    parser.add_argument('--poll-interval', type=float, default=1.0,
-                        help='Polling interval in seconds (default: 1.0)')
-    parser.add_argument('--single-run', action='store_true',
-                        help='Process existing files once and exit (no monitoring)')
-    parser.add_argument('--device', type=str, default='auto',
-                        help='Device to use: auto, cpu, cuda, or cuda:0 (default: auto)')
     
     args = parser.parse_args()
-    
-    # Set up signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Check device availability
-    if args.device == 'auto':
-        cuda_available, device = check_cuda_availability()
-    elif args.device.startswith('cuda'):
-        if torch.cuda.is_available():
-            device = args.device
-            print(f"🚀 Using specified CUDA device: {device}")
-        else:
-            print("⚠️  CUDA requested but not available, falling back to CPU")
-            device = "cpu"
-    else:
-        device = args.device
-        print(f"💻 Using device: {device}")
     
     # Check if weights file exists
     weights_path = Path(args.weights)
     if not weights_path.exists():
         print(f"❌ Error: Weights file '{args.weights}' not found!")
-        print("Make sure to mount your weights directory properly.")
-        return
-    
-    # Check if source directory exists
-    source_path = Path(args.source)
-    if not source_path.exists():
-        print(f"⚠️  Warning: Source directory '{args.source}' does not exist yet.")
-        print("Creating directory and waiting for files...")
-        source_path.mkdir(parents=True, exist_ok=True)
-    
-    # Load the model once
-    print(f"🚀 Loading YOLOv8 model from {args.weights}...")
-    try:
-        model = YOLO(args.weights)
-        print("✅ Model loaded successfully!")
-    except Exception as e:
-        print(f"❌ Error loading model: {e}")
         return
     
     # Create output directory if it doesn't exist
     Path(args.output_base).mkdir(parents=True, exist_ok=True)
     
-    if args.single_run:
-        # Single run mode - process existing files and exit
-        print("\n📋 Running in single-run mode (no monitoring)")
+    # Initialize the Model class
+    model = Model(args.weights, args.conf)
+    
+    # Initialize the FileWatcher class (empty for now)
+    file_watcher = FileWatcher()
+    
+    # Example usage: Process a single file
+    source_path = Path(args.source)
+    if source_path.exists():
         valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.mp4', '.avi', '.mov'}
         files = [f for f in source_path.iterdir() 
                 if f.is_file() and f.suffix.lower() in valid_extensions]
         
-        if not files:
-            print("No files found to process.")
-        else:
+        if files:
             print(f"Found {len(files)} file(s) to process")
-            watcher = FileWatcher(model, args.source, args.output_base, 
-                                args.conf, args.poll_interval, device)
             for filepath in files:
+                # Create output directory for this file
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_dir = os.path.join(args.output_base, f"output_{timestamp}_{filepath.stem}")
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Process the file
                 start_time = time.time()
-                watcher.process_file(filepath)
-                end_time = time.time()
-                time_ms = (end_time - start_time) * 1000
-                print(f"⏱️  Time taken to process {filepath.name}: {time_ms:.2f} milliseconds")
+                try:
+                    results = model.process_file(filepath, output_dir)
+                    end_time = time.time()
+                    time_ms = (end_time - start_time) * 1000
+                    print(f"⏱️  Time taken to process {filepath.name}: {time_ms:.2f} milliseconds")
+                    print(f"  → Output saved to: {output_dir}")
+                except Exception as e:
+                    print(f"❌ Error processing {filepath.name}: {e}")
+        else:
+            print("No files found to process.")
     else:
-        # Continuous monitoring mode
-        watcher = FileWatcher(model, args.source, args.output_base, 
-                            args.conf, args.poll_interval, device)
-        try:
-            watcher.watch()
-        except KeyboardInterrupt:
-            print("\n✋ Interrupted by user")
-        finally:
-            watcher.stop()
-            print("🏁 File watcher stopped")
+        print(f"⚠️  Source directory '{args.source}' does not exist.")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+    # main()
 
 '''
 docker run --rm -it \
@@ -372,3 +396,40 @@ docker run --rm -it \
   --source /app/input \
   --conf 0.78  
 '''
+
+#%%
+
+#### TESTING ####
+
+# Load the environment variables
+from dotenv import load_dotenv
+load_dotenv('.env')
+
+# Initialize the parameters
+weights_path = "./weights/best.pt"
+source_path = "./Input"
+conf = 0.85
+output_base = "./Output"
+
+# Initialize the Model class
+model = Model(weights_path, conf)
+
+# Just give one file to the model
+filepath = "./Input/Station3-1/20251014-124754-00010.Jpeg"
+results = model.process_file(Path(filepath), output_base)
+print(results)
+
+# Process the results
+label_dict = model.create_label_dict(results, threshold=0.80)
+print(label_dict)
+
+
+# Initialize the FunctionAppConnector class
+function_app_connector = FunctionAppConnector()
+
+# Send the payload to SignalR
+result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=label_dict)
+print(result)
+
+
+# %%

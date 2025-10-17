@@ -1,0 +1,64 @@
+# Essential Git Commands Reference
+
+## Basic Repository Operations
+git init                    # Initialize a new Git repository
+git clone <url>             # Clone an existing repository
+git status                  # Check the status of your working directory
+git log                     # View commit history
+git log --oneline           # Compact commit history
+
+## Staging and Committing
+git add <file>              # Stage a specific file
+git add .                   # Stage all changes
+git add -A                  # Stage all changes (including deletions)
+git commit -m "message"     # Commit staged changes with a message
+git commit -am "message"    # Stage and commit all tracked files
+
+## Branching
+git branch                  # List all branches
+git branch <name>           # Create a new branch
+git checkout <branch>       # Switch to a branch
+git checkout -b <name>      # Create and switch to a new branch
+git merge <branch>          # Merge a branch into current branch
+git branch -d <branch>      # Delete a branch
+
+## Remote Operations
+git remote -v               # List remote repositories
+git push origin <branch>    # Push changes to remote
+git pull origin <branch>    # Pull changes from remote
+git fetch                   # Download changes without merging
+
+## Undoing Changes
+git reset HEAD <file>       # Unstage a file
+git checkout -- <file>      # Discard changes to a file
+git revert <commit>         # Create a new commit that undoes changes
+git reset --hard HEAD      # Discard all uncommitted changes
+
+## Essential Workflow Commands
+git diff                    # Show differences between working directory and staging area
+git diff --staged           # Show differences between staging area and last commit
+git stash                   # Temporarily save uncommitted changes
+git stash pop               # Restore stashed changes
+
+## Advanced Commands
+git rebase <branch>         # Rebase current branch onto another branch
+git cherry-pick <commit>    # Apply a specific commit to current branch
+git tag <name>              # Create a tag
+git tag -a <name> -m "msg"  # Create an annotated tag
+git show <commit>           # Show details of a specific commit
+git blame <file>            # Show who changed each line in a file
+
+## Configuration
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
+git config --list          # List all configuration settings
+
+## Useful Aliases (add to ~/.gitconfig)
+[alias]
+    st = status
+    co = checkout
+    br = branch
+    ci = commit
+    unstage = reset HEAD --
+    last = log -1 HEAD
+    visual = !gitk

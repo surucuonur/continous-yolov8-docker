@@ -3,10 +3,10 @@ YOLOv8 Inference Script - Simplified Version
 Clean separation of Model and FileWatcher classes for easy building
 
 #TODO:
-    1) Model to Json Payload
-    2) Send Payload to SignalR
-    3) Image processing in parallel (with and without GPU)
-    4) FileWatcher
+    1) Model to Json Payload -- DONE
+    2) Send Payload to SignalR -- DONE
+    3) FileWatcher
+    4) Image processing in parallel (with and without GPU) -- DONE
 """
 #%%
 from ultralytics import YOLO
@@ -67,53 +67,74 @@ class Model:
         except Exception as e:
             print(f"❌ Error loading model: {e}")
             raise e
-    
-    def process_file(self, filepath, output_dir):
-        """Process a single file and return results"""
-        print(f"  Processing: {filepath.name} on {self.device}")
+
+    def process_file(self, filepaths, output_dir):
+        """
+        Process images with this logic:
+            - If a single file: process with full GPU (if available)
+            - If a list of files: process in parallel (batch processing)
         
-        try:
-            # Run inference
-            results = self.model.predict(
-                source=str(filepath),
-                conf=self.conf_threshold,
-                save=True,
-                save_txt=True,
-                save_conf=True,
-                show_labels=True,
-                show_conf=True,
-                line_width=2,
-                project=output_dir,
-                name="temp",
-                exist_ok=True,
-                verbose=False,
-                device=self.device
-            )
-            
-            # Reorganize output files
-            # self._reorganize_results(output_dir)
-            
-            # Print detection summary
-            for result in results:
-                num_detections = len(result.boxes) if result.boxes is not None else 0
-                print(f"  ✓ Processed: {num_detections} detection(s) found")
-                
-                # Print detected classes
-                if result.boxes is not None and len(result.boxes) > 0:
-                    detections = {}
-                    for box in result.boxes:
-                        cls = int(box.cls[0])
-                        class_name = self.model.names[cls]
-                        detections[class_name] = detections.get(class_name, 0) + 1
-                    
-                    for class_name, count in detections.items():
-                        print(f"    - {class_name}: {count}")
-            
-            return results
-            
-        except Exception as e:
-            print(f"  ✗ Error processing {filepath.name}: {str(e)}")
-            raise e
+        Args:
+            filepaths (str, Path, or list): Single file path or a list of file paths.
+            output_dir (str): Output directory for results.
+
+        Returns:
+            results (list): List of results for each file.
+        """
+        # Normalize filepaths input to always be a list
+        if isinstance(filepaths, (str, Path)):
+            filepaths = [filepaths]
+
+        if len(filepaths) == 1:
+            # Single-file mode: use 100% GPU/CPU for best speed
+            filepath = filepaths[0]
+            print(f"  Processing single file: {Path(filepath).name} on {self.device} (full power)")
+            try:
+                results = self.model.predict(
+                    source=str(filepath),
+                    conf=self.conf_threshold,
+                    save=True,
+                    save_txt=True,
+                    save_conf=True,
+                    show_labels=True,
+                    show_conf=True,
+                    line_width=2,
+                    project=output_dir,
+                    name="temp",
+                    exist_ok=True,
+                    verbose=False,
+                    device=self.device  # Ensures GPU is used if available
+                )
+
+                # Print detection summary
+                for result in results:
+                    num_detections = len(result.boxes) if result.boxes is not None else 0
+                    print(f"  ✓ Processed: {num_detections} detection(s) found")
+                    if result.boxes is not None and len(result.boxes) > 0:
+                        detections = {}
+                        for box in result.boxes:
+                            # YOLOv8: box.cls is a tensor/array, so ensure correct extraction
+                            cls = int(box.cls[0]) if hasattr(box.cls, "__getitem__") else int(box.cls)
+                            class_name = self.model.names[cls]
+                            detections[class_name] = detections.get(class_name, 0) + 1
+                        for class_name, count in detections.items():
+                            print(f"    - {class_name}: {count}")
+
+                return results
+
+            except Exception as e:
+                file_name = Path(filepath).name if hasattr(filepath, 'name') else str(filepath)
+                print(f"  ✗ Error processing {file_name}: {str(e)}")
+                raise e
+        else:
+            # Multi-file mode: process in parallel (typically batch with less GPU utilization per stream)
+            print(f"  Multiple files detected ({len(filepaths)}). Processing in parallel (batch mode)...")
+            try:
+                results = self.process_images_parallel(filepaths, output_dir)
+                return results
+            except Exception as e:
+                print(f"  ✗ Error processing multiple files in parallel: {str(e)}")
+                raise e
 
     def create_label_dict(self, results, threshold=0.80):
         """Create dictionary of labels with binary detection status"""
@@ -199,7 +220,23 @@ class Model:
 
 
 class FileWatcher:
-    """FileWatcher class for monitoring directories (empty for now)"""
+    """FileWatcher class for monitoring directories (empty for now)
+    
+    This function watches the Input directory, it contains 3 subdirectories:
+    - Station3-1
+    - Station3-2
+    - Station3-3
+
+    For each subdirectory, it will wait for the same naming of the images to come in.
+    The images will be coming in real-time, so we need to process them as they come in.
+    Each image from each subdirectory has the following naming format: YYYYMMDD-HHMMSS-NNNNN.Jpeg (NNNNN is the frame number)
+
+    The Filewatcher should cache the latest processed image, based on that if there is a new image, it shoul wait for to see the same images from all 3 subdirectories to come in.
+    If the same images from all 3 subdirectories come in, it should process the images in parallel.
+
+    After that, it should wait for the next set of images to come in.
+    If there is no processed image in the cache, either you can set the oldest image in all sub folders, or you can expect a manual variable to be set.
+    """
     
     def __init__(self):
         pass
@@ -422,7 +459,6 @@ print(results)
 # Process the results
 label_dict = model.create_label_dict(results, threshold=0.80)
 print(label_dict)
-
 
 # Initialize the FunctionAppConnector class
 function_app_connector = FunctionAppConnector()

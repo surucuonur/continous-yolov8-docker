@@ -14,9 +14,11 @@ import argparse
 from pathlib import Path
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import requests
+# import time delta
+from datetime import timedelta
 import torch
 
 print("Library loaded successfully")
@@ -220,7 +222,7 @@ class Model:
 
 
 class FileWatcher:
-    """FileWatcher class for monitoring directories (empty for now)
+    """FileWatcher class for monitoring directories
     
     This function watches the Input directory, it contains 3 subdirectories:
     - Station3-1
@@ -231,18 +233,198 @@ class FileWatcher:
     The images will be coming in real-time, so we need to process them as they come in.
     Each image from each subdirectory has the following naming format: YYYYMMDD-HHMMSS-NNNNN.Jpeg (NNNNN is the frame number)
 
-    The Filewatcher should cache the latest processed image, based on that if there is a new image, it shoul wait for to see the same images from all 3 subdirectories to come in.
+    The Filewatcher should cache the latest processed image, based on that if there is a new image, it should wait for to see the same images from all 3 subdirectories to come in.
     If the same images from all 3 subdirectories come in, it should process the images in parallel.
 
     After that, it should wait for the next set of images to come in.
     If there is no processed image in the cache, either you can set the oldest image in all sub folders, or you can expect a manual variable to be set.
     """
     
-    def __init__(self):
-        pass
+    def __init__(self, input_dir, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=0.5):
+        """
+        Initialize the FileWatcher
+        
+        Args:
+            input_dir (str or Path): Base input directory containing subdirectories
+            subdirs (list): List of subdirectory names to monitor (default: Station3-1, Station3-2, Station3-3)
+            poll_interval (float): Time in seconds between directory checks (default: 1.0)
+        """
+        self.input_dir = Path(input_dir)
+        self.subdirs = subdirs
+        self.poll_interval = poll_interval
+        
+        # Cache for the latest processed image identifier
+        self.last_processed_identifier = self.get_latest_common_identifier_in_subdirs()
+        
+        # Validate input directory and subdirectories
+        if not self.input_dir.exists():
+            raise ValueError(f"Input directory '{input_dir}' does not exist!")
+        
+        for subdir in self.subdirs:
+            subdir_path = self.input_dir / subdir
+            if not subdir_path.exists():
+                raise ValueError(f"Subdirectory '{subdir}' does not exist in {input_dir}!")
+        
+        print(f"📁 FileWatcher initialized")
+        print(f"   Input directory: {self.input_dir}")
+        print(f"   Monitoring subdirectories: {', '.join(self.subdirs)}")
+        print(f"   Poll interval: {self.poll_interval}s")
     
-    # TODO: Implement file watching functionality
-    # This class is intentionally left empty for future implementation
+    def extract_identifier(self, filename):
+        """
+        Extract the unique identifier from an image filename.
+        Format: YYYYMMDD-HHMMSS-NNNNN.Jpeg
+        Returns: YYYYMMDD-HHMMSS-NNNNN (without extension)
+        
+        Args:
+            filename (str): The filename to extract identifier from
+            
+        Returns:
+            str: The identifier or None if format doesn't match
+        """
+        if isinstance(filename, Path):
+            filename = filename.name
+        
+        # Remove extension
+        name_without_ext = Path(filename).stem
+        
+        # Validate format: YYYYMMDD-HHMMSS-NNNNN
+        parts = name_without_ext.split('-')
+        if len(parts) == 3 and len(parts[0]) == 8 and len(parts[1]) == 6 and len(parts[2]) == 5:
+            return name_without_ext
+        
+        return None
+    
+    def get_all_images_in_subdir(self, subdir):
+        """
+        Get all image files in a specific subdirectory
+        
+        Args:
+            subdir (str): Name of the subdirectory
+            
+        Returns:
+            list: List of Path objects for images in the subdirectory
+        """
+        subdir_path = self.input_dir / subdir
+        valid_extensions = {'.jpg', '.jpeg', '.Jpeg', '.JPG', '.JPEG'}
+        
+        images = [f for f in subdir_path.iterdir() 
+                 if f.is_file() and f.suffix in valid_extensions]
+        
+        return sorted(images)  # Sort by name for consistent ordering
+    
+    def get_all_identifiers_in_subdir(self, subdir):
+        """
+        Get all image identifiers in a specific subdirectory
+        
+        Args:
+            subdir (str): Name of the subdirectory
+            
+        Returns:
+            set: Set of identifiers found in the subdirectory
+        """
+        images = self.get_all_images_in_subdir(subdir)
+        identifiers = set()
+        
+        for img in images:
+            identifier = self.extract_identifier(img.name)
+            if identifier:
+                identifiers.add(identifier)
+        
+        return identifiers
+
+    def get_latest_common_identifier_in_subdirs(self):
+        """
+        Find the latest common identifier (image naming format: YYYYMMDD-HHMMSS-NNNNN) in the last 5 images in all subdirectories.
+
+        Note: Sometimes the image timestamps might have a difference of 1 second, thus we utilized the timestamp for sorting, and check the sequence number for matching.
+        """
+
+        # create a dict of identifiers with the subdir name as the key
+        identifiers_dict = {subdir: self.get_all_identifiers_in_subdir(subdir) for subdir in self.subdirs}
+
+        # sort each identifier in ascending order
+        identifiers_sorted = {subdir: sorted(identifiers) for subdir, identifiers in identifiers_dict.items()}
+
+        latest_identifiers_last = {subdir: identifiers[-1] for subdir, identifiers in identifiers_sorted.items()}
+        latest_identifiers_sequence_last = {subdir: int(latest_identifier.split('-')[-1]) for subdir, latest_identifier in latest_identifiers_last.items()}
+        # find the minimum sequence number
+        min_sequence_number = min(latest_identifiers_sequence_last.values())
+
+        # For each subdirectory, find the sequence number that is equal to the minimum sequence number.
+        latest_common_identifier = {}
+        for subdir, identifiers in identifiers_sorted.items():
+            for identifier in identifiers:
+                if int(identifier.split('-')[-1]) == min_sequence_number:
+                    latest_common_identifier[subdir] = identifier
+                    break
+        if len(latest_common_identifier) == len(self.subdirs):
+            return latest_common_identifier
+        else:
+            # print("❌ No common identifier found in the last 5 images in all subdirectories")
+            pass
+        return None
+        
+    
+    def get_image_paths_for_identifier(self, identifier):
+        image_paths = []
+        
+        for subdir in self.subdirs:
+            images = self.get_all_images_in_subdir(subdir)
+            for img in images:
+                if self.extract_identifier(img.name) == identifier:
+                    image_paths.append(img)
+                    break
+        
+        return image_paths
+    
+    def watch_incoming_images(self, sleep_interval=0.5):
+        """
+        This function watches the input subdirectories untill a new common identifier is found.
+        Once found, it stops the loop, and returns the path of each identifier in each subdirectory as a list.
+        """
+        print(f"Watching for new common identifier in the input subdirectories")
+        print(f"Last processed identifier: {self.last_processed_identifier}")
+        print(f"Sleep interval: {sleep_interval}s")
+        while True:
+            latest_common_identifier = self.get_latest_common_identifier_in_subdirs()
+            if latest_common_identifier != self.last_processed_identifier:
+                print(f"New common identifier found: {latest_common_identifier}")
+                print(f"Last processed identifier: {self.last_processed_identifier}")
+                # return the path of each identifier in each subdirectory as a list
+            # image_paths_dict = {subdir: self.get_image_paths_for_identifier(latest_common_identifier[subdir]) for subdir in self.subdirs}
+                image_paths = []
+                for subdir, identifier in latest_common_identifier.items():
+                    image_path = f'{self.input_dir}/{subdir}/{identifier}.Jpeg'
+                    image_paths.append(image_path)
+                return image_paths
+                
+            else:
+                pass
+            time.sleep(sleep_interval)
+
+
+    def get_status(self):
+        """
+        Get current status of the FileWatcher
+        
+        Returns:
+            dict: Status information
+        """
+        common_identifiers = self.find_common_identifiers()
+        pending = []
+        
+        if self.last_processed_identifier:
+            pending = [id for id in common_identifiers if id > self.last_processed_identifier]
+        else:
+            pending = common_identifiers
+        
+        return {
+            "last_processed": self.last_processed_identifier,
+            "pending_count": len(pending),
+            "pending_identifiers": pending[:5],  # Show first 5
+            "total_common": len(common_identifiers)
+        }
 
 
     
@@ -375,50 +557,50 @@ def main():
     
     args = parser.parse_args()
     
-    # Check if weights file exists
-    weights_path = Path(args.weights)
-    if not weights_path.exists():
-        print(f"❌ Error: Weights file '{args.weights}' not found!")
-        return
+    # # Check if weights file exists
+    # weights_path = Path(args.weights)
+    # if not weights_path.exists():
+    #     print(f"❌ Error: Weights file '{args.weights}' not found!")
+    #     return
     
-    # Create output directory if it doesn't exist
-    Path(args.output_base).mkdir(parents=True, exist_ok=True)
+    # # Create output directory if it doesn't exist
+    # Path(args.output_base).mkdir(parents=True, exist_ok=True)
     
-    # Initialize the Model class
-    model = Model(args.weights, args.conf)
+    # # Initialize the Model class
+    # model = Model(args.weights, args.conf)
     
-    # Initialize the FileWatcher class (empty for now)
-    file_watcher = FileWatcher()
+    # # Initialize the FileWatcher class (empty for now)
+    # file_watcher = FileWatcher(args.source, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=1.0)
     
-    # Example usage: Process a single file
-    source_path = Path(args.source)
-    if source_path.exists():
-        valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.mp4', '.avi', '.mov'}
-        files = [f for f in source_path.iterdir() 
-                if f.is_file() and f.suffix.lower() in valid_extensions]
+    # # Example usage: Process a single file
+    # source_path = Path(args.source)
+    # if source_path.exists():
+    #     valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.mp4', '.avi', '.mov'}
+    #     files = [f for f in source_path.iterdir() 
+    #             if f.is_file() and f.suffix.lower() in valid_extensions]
         
-        if files:
-            print(f"Found {len(files)} file(s) to process")
-            for filepath in files:
-                # Create output directory for this file
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_dir = os.path.join(args.output_base, f"output_{timestamp}_{filepath.stem}")
-                os.makedirs(output_dir, exist_ok=True)
+    #     if files:
+    #         print(f"Found {len(files)} file(s) to process")
+    #         for filepath in files:
+    #             # Create output directory for this file
+    #             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    #             output_dir = os.path.join(args.output_base, f"output_{timestamp}_{filepath.stem}")
+    #             os.makedirs(output_dir, exist_ok=True)
                 
-                # Process the file
-                start_time = time.time()
-                try:
-                    results = model.process_file(filepath, output_dir)
-                    end_time = time.time()
-                    time_ms = (end_time - start_time) * 1000
-                    print(f"⏱️  Time taken to process {filepath.name}: {time_ms:.2f} milliseconds")
-                    print(f"  → Output saved to: {output_dir}")
-                except Exception as e:
-                    print(f"❌ Error processing {filepath.name}: {e}")
-        else:
-            print("No files found to process.")
-    else:
-        print(f"⚠️  Source directory '{args.source}' does not exist.")
+    #             # Process the file
+    #             start_time = time.time()
+    #             try:
+    #                 results = model.process_file(filepath, output_dir)
+    #                 end_time = time.time()
+    #                 time_ms = (end_time - start_time) * 1000
+    #                 print(f"⏱️  Time taken to process {filepath.name}: {time_ms:.2f} milliseconds")
+    #                 print(f"  → Output saved to: {output_dir}")
+    #             except Exception as e:
+    #                 print(f"❌ Error processing {filepath.name}: {e}")
+    #     else:
+    #         print("No files found to process.")
+    # else:
+    #     print(f"⚠️  Source directory '{args.source}' does not exist.")
 
 # if __name__ == "__main__":
     # main()
@@ -448,24 +630,45 @@ source_path = "./Input"
 conf = 0.85
 output_base = "./Output"
 
-# Initialize the Model class
+# # Initialize the Model class
 model = Model(weights_path, conf)
 
-# Just give one file to the model
-filepath = "./Input/Station3-1/20251014-124754-00010.Jpeg"
-results = model.process_file(Path(filepath), output_base)
-print(results)
-
-# Process the results
-label_dict = model.create_label_dict(results, threshold=0.80)
-print(label_dict)
-
-# Initialize the FunctionAppConnector class
-function_app_connector = FunctionAppConnector()
-
-# Send the payload to SignalR
-result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=label_dict)
-print(result)
+# # Initialize the FileWatcher class
+file_watcher = FileWatcher(source_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=1.0)
+image_paths = file_watcher.watch_incoming_images()
+print(image_paths)
 
 
+# # Initialize the FunctionAppConnector class
+# function_app_connector = FunctionAppConnector()
+
+# # Send the payload to SignalR
+# result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=label_dict)
+# print(result)
+
+
+# %%
+# Initialize
+# file_watcher = FileWatcher(input_dir="./Input")
+
+# while True:
+#     latest_common_identifier = file_watcher.get_latest_common_identifier_in_subdirs()
+#     if latest_common_identifier != file_watcher.last_processed_identifier:
+#         print(f"New common identifier found: {latest_common_identifier}")
+#         file_watcher.last_processed_identifier = latest_common_identifier
+#         print(f"Last processed identifier: {file_watcher.last_processed_identifier}")
+#     else:
+#         print(f"No new common identifier found, waiting for the next set of images to come in")
+#     time.sleep(0.5)
+
+# # Start watching and processing
+# file_watcher.watch_and_process(
+#     model=model,
+#     output_dir="./Output",
+#     callback=lambda id, results, label_dict: print(f"Processed {id}")
+# )
+
+# # Or check status
+# status = file_watcher.get_status()
+# print(status)
 # %%

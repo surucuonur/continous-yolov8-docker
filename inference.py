@@ -71,7 +71,7 @@ class Model:
             print(f"❌ Error loading model: {e}")
             raise e
 
-    def process_file(self, filepaths, output_dir):
+    def process_file(self, filepaths):
         """
         Process images with this logic:
             - If a single file: process with full GPU (if available)
@@ -79,7 +79,6 @@ class Model:
         
         Args:
             filepaths (str, Path, or list): Single file path or a list of file paths.
-            output_dir (str): Output directory for results.
 
         Returns:
             results (list): List of results for each file.
@@ -90,18 +89,19 @@ class Model:
 
 
         # Single-file mode: use 100% GPU/CPU for best speed
+        # Dont save the results anywhere, just return the results
         results = self.model.predict(
             source=filepaths,
             conf=self.conf_threshold,
-            save=True,
-            save_txt=True,
-            save_conf=True,
+            save=False,
+            save_txt=False,
+            save_conf=False,
             show_labels=True,
             show_conf=True,
             line_width=2,
-            project=output_dir,
-            name="temp",
-            exist_ok=True,
+            # project=output_dir,
+            # name="temp",
+            # exist_ok=True,
             verbose=False,
             device=self.device  # Ensures GPU is used if available
         )
@@ -225,37 +225,6 @@ class Model:
             }
         }
         return final_payload
-    
-    # def _reorganize_results(self, output_dir):
-    #     """Reorganize YOLO output files into proper structure"""
-    #     temp_dir = os.path.join(output_dir, "temp")
-        
-    #     if os.path.exists(temp_dir):
-    #         # Create subdirectories
-    #         image_dir = os.path.join(output_dir, "image")
-    #         label_dir = os.path.join(output_dir, "label")
-    #         os.makedirs(image_dir, exist_ok=True)
-    #         os.makedirs(label_dir, exist_ok=True)
-            
-    #         # Move image files
-    #         for file in os.listdir(temp_dir):
-    #             file_path = os.path.join(temp_dir, file)
-    #             if os.path.isfile(file_path) and file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
-    #                 shutil.move(file_path, os.path.join(image_dir, file))
-            
-    #         # Move label files
-    #         temp_labels = os.path.join(temp_dir, "labels")
-    #         if os.path.exists(temp_labels):
-    #             for file in os.listdir(temp_labels):
-    #                 shutil.move(
-    #                     os.path.join(temp_labels, file),
-    #                     os.path.join(label_dir, file)
-    #                 )
-    #             os.rmdir(temp_labels)
-            
-    #         # Clean up temp directory
-    #         if os.path.exists(temp_dir):
-    #             shutil.rmtree(temp_dir)
 
 
 class FileWatcher:
@@ -441,7 +410,6 @@ class FileWatcher:
                 pass
             time.sleep(sleep_interval)
 
-
     def get_status(self):
         """
         Get current status of the FileWatcher
@@ -581,6 +549,20 @@ class FunctionAppConnector:
             print(f"✗ Connection test failed: {e}")
             return False
 
+class timer:
+    """
+    Timer class to time the execution of a function
+    """
+    def __init__(self, func):
+        self.func = func
+    
+    def __call__(self, *args, **kwargs):
+        start_time = time.time()
+        result = self.func(*args, **kwargs)
+        end_time = time.time()
+        elapsed_ms = (end_time - start_time) * 1000
+        print(f"[⏱️] Time taken for {self.func.__name__}: {elapsed_ms:.2f} ms")
+
 def main():
     """Main function demonstrating usage of Model and FileWatcher classes"""
     parser = argparse.ArgumentParser(description='YOLOv8 simplified inference')
@@ -594,54 +576,78 @@ def main():
                         help='Base output directory (default: /app/output)')
     
     args = parser.parse_args()
-    
-    # # Check if weights file exists
-    # weights_path = Path(args.weights)
-    # if not weights_path.exists():
-    #     print(f"❌ Error: Weights file '{args.weights}' not found!")
-    #     return
-    
-    # # Create output directory if it doesn't exist
-    # Path(args.output_base).mkdir(parents=True, exist_ok=True)
-    
-    # # Initialize the Model class
-    # model = Model(args.weights, args.conf)
-    
-    # # Initialize the FileWatcher class (empty for now)
-    # file_watcher = FileWatcher(args.source, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=1.0)
-    
-    # # Example usage: Process a single file
-    # source_path = Path(args.source)
-    # if source_path.exists():
-    #     valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.mp4', '.avi', '.mov'}
-    #     files = [f for f in source_path.iterdir() 
-    #             if f.is_file() and f.suffix.lower() in valid_extensions]
-        
-    #     if files:
-    #         print(f"Found {len(files)} file(s) to process")
-    #         for filepath in files:
-    #             # Create output directory for this file
-    #             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    #             output_dir = os.path.join(args.output_base, f"output_{timestamp}_{filepath.stem}")
-    #             os.makedirs(output_dir, exist_ok=True)
-                
-    #             # Process the file
-    #             start_time = time.time()
-    #             try:
-    #                 results = model.process_file(filepath, output_dir)
-    #                 end_time = time.time()
-    #                 time_ms = (end_time - start_time) * 1000
-    #                 print(f"⏱️  Time taken to process {filepath.name}: {time_ms:.2f} milliseconds")
-    #                 print(f"  → Output saved to: {output_dir}")
-    #             except Exception as e:
-    #                 print(f"❌ Error processing {filepath.name}: {e}")
-    #     else:
-    #         print("No files found to process.")
-    # else:
-    #     print(f"⚠️  Source directory '{args.source}' does not exist.")
 
-# if __name__ == "__main__":
-    # main()
+    # Load the environment variables
+    from dotenv import load_dotenv
+    load_dotenv('.env')
+
+    # Initialize the parameters
+    weights_path = os.environ.get("WEIGHTS_PATH")
+    input_path = os.environ.get("INPUT_PATH")
+    conf = float(os.environ.get("CONF"))
+    # output_base = os.environ.get("OUTPUT_BASE")
+
+    # # Initialize the Model class
+    model = Model(weights_path, conf)
+
+    # Initialize the FunctionAppConnector class
+    function_app_connector = FunctionAppConnector()
+
+    # # Initialize the FileWatcher class
+    file_watcher = FileWatcher(input_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=0.5)
+
+    def timed(label):
+        def decorator(func):
+            def wrapper(*args, **kwargs):
+                start = time.time()
+                result = func(*args, **kwargs)
+                end = time.time()
+                elapsed = (end - start) * 1000
+                return result, elapsed
+            return wrapper
+        return decorator
+
+    @timed("file_watcher.watch_incoming_images")
+    def timed_watch_images():
+        return file_watcher.watch_incoming_images()
+
+    @timed("model.process_file")
+    def timed_process_file(image_paths):
+        return model.process_file(image_paths)
+
+    @timed("model.results_post_processing")
+    def timed_post_processing(results):
+        # Re-initialize model just like the original code
+        temp_model = Model(weights_path, conf)
+        return temp_model.results_post_processing(results)
+
+    @timed("function_app_connector.trigger_broadcast")
+    def timed_broadcast(final_payload):
+        return function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
+
+    while True:
+        times = []
+        image_paths = file_watcher.watch_incoming_images()
+        # times.append(("file_watcher.watch_incoming_images", elapsed))
+
+        results, elapsed = timed_process_file(image_paths)
+        times.append(("model.process_file", elapsed))
+
+        final_payload, elapsed = timed_post_processing(results)
+        print(f"✅ Final payload created: {final_payload}")
+        times.append(("model.results_post_processing", elapsed))
+
+        result, elapsed = timed_broadcast(final_payload)
+        print(f"✅ Payload sent successfully! {result}")
+        times.append(("function_app_connector.trigger_broadcast", elapsed))
+
+        print("[⏱️] Execution times (ms):")
+        for label, t in times:
+            print(f"   {label}: {t:.2f} ms")
+            print(f"Total time: {sum(t for _, t in times):.2f} ms")
+
+if __name__ == "__main__":
+    main()
 
 '''
 docker run --rm -it \
@@ -658,59 +664,57 @@ docker run --rm -it \
 
 #### TESTING ####
 
-# Load the environment variables
-from dotenv import load_dotenv
-load_dotenv('.env')
+# # Load the environment variables
+# from dotenv import load_dotenv
+# load_dotenv('.env')
 
-# Initialize the parameters
-weights_path = "./weights/best.pt"
-source_path = "./Input"
-conf = 0.85
-output_base = "./Output"
+# # Initialize the parameters
+# weights_path = "./weights/best.pt"
+# source_path = "./Input"
+# conf = 0.85
+# output_base = "./Output"
 
-# # Initialize the Model class
-model = Model(weights_path, conf)
+# # # Initialize the Model class
+# model = Model(weights_path, conf)
 
-# Initialize the FunctionAppConnector class
-function_app_connector = FunctionAppConnector()
+# # Initialize the FunctionAppConnector class
+# function_app_connector = FunctionAppConnector()
 
-# # Initialize the FileWatcher class
-file_watcher = FileWatcher(source_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=1.0)
+# # # Initialize the FileWatcher class
+# file_watcher = FileWatcher(source_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=1.0)
 
 
-#%%
-import time
 
-while True:
-    # Time file_watcher.watch_incoming_images()
-    start_time = time.time()
-    image_paths = file_watcher.watch_incoming_images()
-    end_time = time.time()
-    elapsed_ms = (end_time - start_time) * 1000
-    print(f"[⏱️] Time taken for file_watcher.watch_incoming_images(): {elapsed_ms:.2f} ms")
-    # print(image_paths)
+# while True:
+#     # Time file_watcher.watch_incoming_images()
+#     start_time = time.time()
+#     image_paths = file_watcher.watch_incoming_images()
+#     end_time = time.time()
+#     elapsed_ms = (end_time - start_time) * 1000
+#     print(f"[⏱️] Time taken for file_watcher.watch_incoming_images(): {elapsed_ms:.2f} ms")
+#     # print(image_paths)
 
-    # Time model.process_file
-    start_time = time.time()
-    results = model.process_file(image_paths, output_base)
-    end_time = time.time()
-    elapsed_ms = (end_time - start_time) * 1000
-    print(f"[⏱️] Time taken for model.process_file(): {elapsed_ms:.2f} ms")
-    # print(results)
+#     # Time model.process_file
+#     start_time = time.time()
+#     results = model.process_file(image_paths, output_base)
+#     end_time = time.time()
+#     elapsed_ms = (end_time - start_time) * 1000
+#     print(f"[⏱️] Time taken for model.process_file(): {elapsed_ms:.2f} ms")
+#     # print(results)
 
-    # Time model.results_post_processing
-    start_time = time.time()
-    model = Model(weights_path, conf)
-    final_payload = model.results_post_processing(results)
-    end_time = time.time()
-    elapsed_ms = (end_time - start_time) * 1000
-    print(f"[⏱️] Time taken for model.results_post_processing(): {elapsed_ms:.2f} ms")
-    # print(final_payload)
+#     # Time model.results_post_processing
+#     start_time = time.time()
+#     model = Model(weights_path, conf)
+#     final_payload = model.results_post_processing(results)
+#     end_time = time.time()
+#     elapsed_ms = (end_time - start_time) * 1000
+#     print(f"[⏱️] Time taken for model.results_post_processing(): {elapsed_ms:.2f} ms")
+#     # print(final_payload)
 
-    # Time function_app_connector.trigger_broadcast
-    start_time = time.time()
-    result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
-    end_time = time.time()
-    elapsed_ms = (end_time - start_time) * 1000
-    print(f"[⏱️] Time taken for function_app_connector.trigger_broadcast(): {elapsed_ms:.2f} ms")
-    # print(result)
+#     # Time function_app_connector.trigger_broadcast
+#     start_time = time.time()
+#     result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
+#     end_time = time.time()
+#     elapsed_ms = (end_time - start_time) * 1000
+#     print(f"[⏱️] Time taken for function_app_connector.trigger_broadcast(): {elapsed_ms:.2f} ms")
+#     # print(result)

@@ -10,6 +10,7 @@ Clean separation of Model and FileWatcher classes for easy building
 """
 #%%
 from ultralytics import YOLO
+import numpy as np
 import argparse
 from pathlib import Path
 import os
@@ -87,58 +88,44 @@ class Model:
         if isinstance(filepaths, (str, Path)):
             filepaths = [filepaths]
 
-        if len(filepaths) == 1:
-            # Single-file mode: use 100% GPU/CPU for best speed
-            filepath = filepaths[0]
-            print(f"  Processing single file: {Path(filepath).name} on {self.device} (full power)")
-            try:
-                results = self.model.predict(
-                    source=str(filepath),
-                    conf=self.conf_threshold,
-                    save=True,
-                    save_txt=True,
-                    save_conf=True,
-                    show_labels=True,
-                    show_conf=True,
-                    line_width=2,
-                    project=output_dir,
-                    name="temp",
-                    exist_ok=True,
-                    verbose=False,
-                    device=self.device  # Ensures GPU is used if available
-                )
 
-                # Print detection summary
-                for result in results:
-                    num_detections = len(result.boxes) if result.boxes is not None else 0
-                    print(f"  ✓ Processed: {num_detections} detection(s) found")
-                    if result.boxes is not None and len(result.boxes) > 0:
-                        detections = {}
-                        for box in result.boxes:
-                            # YOLOv8: box.cls is a tensor/array, so ensure correct extraction
-                            cls = int(box.cls[0]) if hasattr(box.cls, "__getitem__") else int(box.cls)
-                            class_name = self.model.names[cls]
-                            detections[class_name] = detections.get(class_name, 0) + 1
-                        for class_name, count in detections.items():
-                            print(f"    - {class_name}: {count}")
+        # Single-file mode: use 100% GPU/CPU for best speed
+        results = self.model.predict(
+            source=filepaths,
+            conf=self.conf_threshold,
+            save=True,
+            save_txt=True,
+            save_conf=True,
+            show_labels=True,
+            show_conf=True,
+            line_width=2,
+            project=output_dir,
+            name="temp",
+            exist_ok=True,
+            verbose=False,
+            device=self.device  # Ensures GPU is used if available
+        )
 
-                return results
+        label_dict = {}
+        # Print detection summary
+        for i, result in enumerate(results):
+            num_detections = len(result.boxes) if result.boxes is not None else 0
+            print(f"  ✓ Processed: {num_detections} detection(s) found")
+            if result.boxes is not None and len(result.boxes) > 0:
+                detections = {}
+                for box in result.boxes:
+                    # YOLOv8: box.cls is a tensor/array, so ensure correct extraction
+                    cls = int(box.cls[0]) if hasattr(box.cls, "__getitem__") else int(box.cls)
+                    class_name = self.model.names[cls]
+                    detections[class_name] = detections.get(class_name, 0) + 1
+                for class_name, count in detections.items():
+                    print(f"    - {class_name}: {count}")
+            # Create label dictionary for each result
+            payload = self.create_payload_json(result)
+            label_dict[filepaths[i]] = payload
+        return label_dict
 
-            except Exception as e:
-                file_name = Path(filepath).name if hasattr(filepath, 'name') else str(filepath)
-                print(f"  ✗ Error processing {file_name}: {str(e)}")
-                raise e
-        else:
-            # Multi-file mode: process in parallel (typically batch with less GPU utilization per stream)
-            print(f"  Multiple files detected ({len(filepaths)}). Processing in parallel (batch mode)...")
-            try:
-                results = self.process_images_parallel(filepaths, output_dir)
-                return results
-            except Exception as e:
-                print(f"  ✗ Error processing multiple files in parallel: {str(e)}")
-                raise e
-
-    def create_label_dict(self, results, threshold=0.80):
+    def create_payload_json(self, results, threshold=0.80):
         """Create dictionary of labels with binary detection status"""
         label_dict = {}
         
@@ -188,6 +175,56 @@ class Model:
             }
         }
         return payload
+
+    def results_post_processing(self, results):
+        """
+        For the 3 angle camerage view, if the voting is greater than 2, then the result is valid.
+        """
+        final_results_counter = {}
+
+        # Count the number of valid results for each subkey
+        for key, payload in results.items():
+            for subkey, subvalue in payload["Closed_Case"].items():
+                # Check if the subkey is inthe final_results_counter
+                if subkey in final_results_counter:
+                    # print("Adding to existing subkey")
+                    # print(f"Adding new subkey: {subkey}")
+                    # print(f"Value: {subvalue['Found']}")
+                    final_results_counter[subkey].append(subvalue['Found'])
+                else:
+                    if subkey != "State":
+                        # print("Initializing new subkey")
+                        # print(f"Adding new subkey: {subkey}")
+                        # print(f"Value: {subvalue['Found']}")
+
+                        final_results_counter[subkey] = [subvalue['Found']]
+
+        # take the median as the final values, and assign it to the fina_result_dict
+        final_result_dict = {}
+        for key, value in final_results_counter.items():
+            final_result_dict[key] = int(np.median(value))
+        # print(final_result_dict)
+
+
+        final_payload = {
+            "Closed_Case": {
+                "Top": {"Expected": 1, "Found": 1},
+                "Bottom": {"Expected": 1, "Found": 1},
+                "Front": {"Expected": 1, "Found": 1},
+                "Back": {"Expected": 1, "Found": 1},
+                "Left_Side": {"Expected": 1, "Found": 1},
+                "Right_Side": {"Expected": 1, "Found": 1},
+                "Empty_Wheel_Well": {"Expected": 1, "Found": final_result_dict["Empty_Wheel_Well"]},
+                "Foam": {"Expected": 1, "Found": final_result_dict["Foam"]},
+                "Handle": {"Expected": 2, "Found": final_result_dict["Handle"]},
+                "Handle_Ribs": {"Expected": 2, "Found": final_result_dict["Handle_Ribs"]},
+                "Latch": {"Expected": 2, "Found": final_result_dict["Latch"]},
+                "Latch_Ribs": {"Expected": 2, "Found": final_result_dict["Latch_Ribs"]},
+                "Wheel_Well_With_Wheel": {"Expected": 2, "Found": final_result_dict["Wheel_Well_With_Wheel"]},
+                "State": 2
+            }
+        }
+        return final_payload
     
     # def _reorganize_results(self, output_dir):
     #     """Reorganize YOLO output files into proper structure"""
@@ -397,6 +434,7 @@ class FileWatcher:
                 for subdir, identifier in latest_common_identifier.items():
                     image_path = f'{self.input_dir}/{subdir}/{identifier}.Jpeg'
                     image_paths.append(image_path)
+                    self.last_processed_identifier = latest_common_identifier
                 return image_paths
                 
             else:
@@ -633,42 +671,46 @@ output_base = "./Output"
 # # Initialize the Model class
 model = Model(weights_path, conf)
 
+# Initialize the FunctionAppConnector class
+function_app_connector = FunctionAppConnector()
+
 # # Initialize the FileWatcher class
 file_watcher = FileWatcher(source_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=1.0)
-image_paths = file_watcher.watch_incoming_images()
-print(image_paths)
 
 
-# # Initialize the FunctionAppConnector class
-# function_app_connector = FunctionAppConnector()
+#%%
+import time
 
-# # Send the payload to SignalR
-# result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=label_dict)
-# print(result)
+while True:
+    # Time file_watcher.watch_incoming_images()
+    start_time = time.time()
+    image_paths = file_watcher.watch_incoming_images()
+    end_time = time.time()
+    elapsed_ms = (end_time - start_time) * 1000
+    print(f"[⏱️] Time taken for file_watcher.watch_incoming_images(): {elapsed_ms:.2f} ms")
+    # print(image_paths)
 
+    # Time model.process_file
+    start_time = time.time()
+    results = model.process_file(image_paths, output_base)
+    end_time = time.time()
+    elapsed_ms = (end_time - start_time) * 1000
+    print(f"[⏱️] Time taken for model.process_file(): {elapsed_ms:.2f} ms")
+    # print(results)
 
-# %%
-# Initialize
-# file_watcher = FileWatcher(input_dir="./Input")
+    # Time model.results_post_processing
+    start_time = time.time()
+    model = Model(weights_path, conf)
+    final_payload = model.results_post_processing(results)
+    end_time = time.time()
+    elapsed_ms = (end_time - start_time) * 1000
+    print(f"[⏱️] Time taken for model.results_post_processing(): {elapsed_ms:.2f} ms")
+    # print(final_payload)
 
-# while True:
-#     latest_common_identifier = file_watcher.get_latest_common_identifier_in_subdirs()
-#     if latest_common_identifier != file_watcher.last_processed_identifier:
-#         print(f"New common identifier found: {latest_common_identifier}")
-#         file_watcher.last_processed_identifier = latest_common_identifier
-#         print(f"Last processed identifier: {file_watcher.last_processed_identifier}")
-#     else:
-#         print(f"No new common identifier found, waiting for the next set of images to come in")
-#     time.sleep(0.5)
-
-# # Start watching and processing
-# file_watcher.watch_and_process(
-#     model=model,
-#     output_dir="./Output",
-#     callback=lambda id, results, label_dict: print(f"Processed {id}")
-# )
-
-# # Or check status
-# status = file_watcher.get_status()
-# print(status)
-# %%
+    # Time function_app_connector.trigger_broadcast
+    start_time = time.time()
+    result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
+    end_time = time.time()
+    elapsed_ms = (end_time - start_time) * 1000
+    print(f"[⏱️] Time taken for function_app_connector.trigger_broadcast(): {elapsed_ms:.2f} ms")
+    # print(result)

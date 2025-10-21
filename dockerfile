@@ -14,13 +14,16 @@ WORKDIR /app
 RUN pip3 install --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cu129
 
 # Install Ultralytics and dependencies
-RUN pip3 install --break-system-packages ultralytics opencv-python-headless
+RUN pip3 install --break-system-packages ultralytics opencv-python-headless numpy python-dotenv
 
 # Copy inference script
 COPY inference.py .
 
+ENV PROCESS_FUNCTION_KEY=im17DX93TP7N48ez24JXi2Zc2KO7mTdH6DI4d7KV5E6xAzFuThfqeA==
+
 # Create directories
 RUN mkdir -p /app/input /app/output /app/weights
+RUN mkdir -p /app/input/Station3-1 /app/input/Station3-2 /app/input/Station3-3
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

@@ -4,9 +4,9 @@ services:
   yolov8-inference:
     build: .
     container_name: yolov8-inference
-    runtime: nvidia
+    # runtime: nvidia
     volumes:
-      - ./input:/app/input:ro
+      - ./Input:/app/input:ro
       - ./output:/app/output
       - ./weights:/app/weights:ro
     environment:
@@ -15,6 +15,5 @@ services:
     command: >
       --weights /app/weights/best.pt
       --source /app/input
-      --conf 0.78
-      --device auto
-    restart: unless-stopped
+      --conf 0.80
+    # restart: unless-stopped

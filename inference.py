@@ -19,7 +19,6 @@ from datetime import datetime, timedelta
 import time
 import requests
 # import time delta
-from datetime import timedelta
 import torch
 
 print("Library loaded successfully")
@@ -36,7 +35,7 @@ print("Library loaded successfully")
 class Model:
     """YOLOv8 Model class with GPU/CPU detection and processing"""
     
-    def __init__(self, weights_path, conf_threshold=0.25):
+    def __init__(self, weights_path, conf_threshold=0.85):
         self.weights_path = weights_path
         self.conf_threshold = conf_threshold
         self.device = self._detect_device()
@@ -109,8 +108,8 @@ class Model:
         label_dict = {}
         # Print detection summary
         for i, result in enumerate(results):
-            num_detections = len(result.boxes) if result.boxes is not None else 0
-            print(f"  ✓ Processed: {num_detections} detection(s) found")
+            # num_detections = len(result.boxes) if result.boxes is not None else 0
+            # print(f"  ✓ Processed: {num_detections} detection(s) found")
             if result.boxes is not None and len(result.boxes) > 0:
                 detections = {}
                 for box in result.boxes:
@@ -118,8 +117,8 @@ class Model:
                     cls = int(box.cls[0]) if hasattr(box.cls, "__getitem__") else int(box.cls)
                     class_name = self.model.names[cls]
                     detections[class_name] = detections.get(class_name, 0) + 1
-                for class_name, count in detections.items():
-                    print(f"    - {class_name}: {count}")
+                # for class_name, count in detections.items():
+                    # print(f"    - {class_name}: {count}")
             # Create label dictionary for each result
             payload = self.create_payload_json(result)
             label_dict[filepaths[i]] = payload
@@ -152,9 +151,9 @@ class Model:
                     label_name = names[class_id]
                     label_dict[label_name] = 1
 
-        print(f"📊 PPE Detection Status (threshold={threshold}):")
-        for label, status in label_dict.items():
-            print(f"   {label}: {'✅ Detected' if status else '❌ Not Detected'}")
+        # print(f"📊 PPE Detection Status (threshold={threshold}):")
+        # for label, status in label_dict.items():
+            # print(f"   {label}: {'✅ Detected' if status else '❌ Not Detected'}")
             
         payload = {
             "Closed_Case": {
@@ -315,9 +314,9 @@ class FileWatcher:
         valid_extensions = {'.jpg', '.jpeg', '.Jpeg', '.JPG', '.JPEG'}
         
         images = [f for f in subdir_path.iterdir() 
-                 if f.is_file() and f.suffix in valid_extensions]
+                if f.is_file() and f.suffix in valid_extensions]
         
-        return sorted(images)  # Sort by name for consistent ordering
+        return sorted(images)[-5:]  # Get the last 5 images
     
     def get_all_identifiers_in_subdir(self, subdir):
         """
@@ -389,6 +388,8 @@ class FileWatcher:
         This function watches the input subdirectories untill a new common identifier is found.
         Once found, it stops the loop, and returns the path of each identifier in each subdirectory as a list.
         """
+        print("\n\n\n")
+        print("--------------------------------"*2)
         print(f"Watching for new common identifier in the input subdirectories")
         print(f"Last processed identifier: {self.last_processed_identifier}")
         print(f"Sleep interval: {sleep_interval}s")
@@ -561,7 +562,7 @@ class timer:
         result = self.func(*args, **kwargs)
         end_time = time.time()
         elapsed_ms = (end_time - start_time) * 1000
-        print(f"[⏱️] Time taken for {self.func.__name__}: {elapsed_ms:.2f} ms")
+        # print(f"[⏱️] Time taken for {self.func.__name__}: {elapsed_ms:.2f} ms")
 
 def main():
     """Main function demonstrating usage of Model and FileWatcher classes"""
@@ -572,8 +573,8 @@ def main():
                         help='Directory to monitor (default: /app/input)')
     parser.add_argument('--conf', type=float, default=0.85,
                         help='Confidence threshold (default: 0.85)')
-    parser.add_argument('--output-base', type=str, default='/app/output',
-                        help='Base output directory (default: /app/output)')
+    # parser.add_argument('--output-base', type=str, default='/app/output',
+                        # help='Base output directory (default: /app/output)')
     
     args = parser.parse_args()
 
@@ -582,18 +583,21 @@ def main():
     load_dotenv('.env')
 
     # Initialize the parameters
-    weights_path = os.environ.get("WEIGHTS_PATH")
-    input_path = os.environ.get("INPUT_PATH")
-    conf = float(os.environ.get("CONF"))
+    weights_path = args.weights
+    input_path = args.source
+    conf = args.conf
     # output_base = os.environ.get("OUTPUT_BASE")
 
     # # Initialize the Model class
+    print(f"Initializing Model with weights: {weights_path} and confidence threshold: {conf}")
     model = Model(weights_path, conf)
 
     # Initialize the FunctionAppConnector class
+    print(f"Initializing FunctionAppConnector")
     function_app_connector = FunctionAppConnector()
 
     # # Initialize the FileWatcher class
+    print(f"Initializing FileWatcher with input path: {input_path} and subdirectories: Station3-1, Station3-2, Station3-3")
     file_watcher = FileWatcher(input_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=0.5)
 
     def timed(label):
@@ -616,13 +620,12 @@ def main():
         return model.process_file(image_paths)
 
     @timed("model.results_post_processing")
-    def timed_post_processing(results):
+    def timed_post_processing(model, results):
         # Re-initialize model just like the original code
-        temp_model = Model(weights_path, conf)
-        return temp_model.results_post_processing(results)
+        return model.results_post_processing(results)
 
     @timed("function_app_connector.trigger_broadcast")
-    def timed_broadcast(final_payload):
+    def timed_broadcast(function_app_connector, final_payload):
         return function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
 
     while True:
@@ -633,18 +636,18 @@ def main():
         results, elapsed = timed_process_file(image_paths)
         times.append(("model.process_file", elapsed))
 
-        final_payload, elapsed = timed_post_processing(results)
-        print(f"✅ Final payload created: {final_payload}")
+        final_payload, elapsed = timed_post_processing(model, results)
+        # print(f"✅ Final payload created: {final_payload}")
         times.append(("model.results_post_processing", elapsed))
 
-        result, elapsed = timed_broadcast(final_payload)
+        result, elapsed = timed_broadcast(function_app_connector, final_payload)
         print(f"✅ Payload sent successfully! {result}")
         times.append(("function_app_connector.trigger_broadcast", elapsed))
 
         print("[⏱️] Execution times (ms):")
         for label, t in times:
             print(f"   {label}: {t:.2f} ms")
-            print(f"Total time: {sum(t for _, t in times):.2f} ms")
+        print(f"Total time: {sum(t for _, t in times):.2f} ms")
 
 if __name__ == "__main__":
     main()

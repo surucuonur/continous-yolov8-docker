@@ -18,18 +18,19 @@ import shutil
 from datetime import datetime, timedelta
 import time
 import requests
-# import time delta
 import torch
 
-print("Library loaded successfully")
-# print("CUDA available:", torch.cuda.is_available())
-# print("PyTorch version:", torch.__version__)
-# print("CUDA device count:", torch.cuda.device_count())
-# print("CUDA device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
-# print("CUDA device memory:", torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024**3), "GB")
-# print("CUDA device memory free:", torch.cuda.get_device_properties(torch.cuda.current_device()).free_memory / (1024**3), "GB")
-# print("CUDA device memory used:", torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024**3) - torch.cuda.get_device_properties(torch.cuda.current_device()).free_memory / (1024**3), "GB")
-
+try:
+    print("Library loaded successfully")
+    print("CUDA available:", torch.cuda.is_available())
+    print("PyTorch version:", torch.__version__)
+    print("CUDA device count:", torch.cuda.device_count())
+    print("CUDA device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+    print("CUDA device memory:", torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024**3), "GB")
+    print("CUDA device memory free:", torch.cuda.get_device_properties(torch.cuda.current_device()).free_memory / (1024**3), "GB")
+    print("CUDA device memory used:", torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024**3) - torch.cuda.get_device_properties(torch.cuda.current_device()).free_memory / (1024**3), "GB")
+except Exception as e:
+    print(f"❌ Error loading CUDA libraries: {e}")
 #%%
 
 class Model:
@@ -434,7 +435,7 @@ class FileWatcher:
         }
 
 
-    
+
 class FunctionAppConnector:
     """
     Local script to connect to Azure Function App and trigger broadcasts to SignalR

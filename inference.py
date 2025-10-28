@@ -5,12 +5,15 @@ Clean separation of Model and FileWatcher classes for easy building
 #TODO:
     1) Model to Json Payload -- DONE
     2) Send Payload to SignalR -- DONE
-    3) FileWatcher
+    3) FileWatcher -- DONE
     4) Image processing in parallel (with and without GPU) -- DONE
+
+To run the python script: python inference.py --weights=./weights/best.pt --source=./Input --conf=0.85
 """
 #%%
 from ultralytics import YOLO
 import numpy as np
+from scipy.stats import mode
 import argparse
 from pathlib import Path
 import os
@@ -19,6 +22,10 @@ from datetime import datetime, timedelta
 import time
 import requests
 import torch
+# Load the environment variables
+from dotenv import load_dotenv
+load_dotenv('.env')
+
 
 try:
     print("Library loaded successfully")
@@ -102,7 +109,7 @@ class Model:
             # project=output_dir,
             # name="temp",
             # exist_ok=True,
-            verbose=False,
+            verbose=True,
             device=self.device  # Ensures GPU is used if available
         )
 
@@ -120,6 +127,8 @@ class Model:
                     detections[class_name] = detections.get(class_name, 0) + 1
                 # for class_name, count in detections.items():
                     # print(f"    - {class_name}: {count}")
+            # if result is None or (hasattr(result, 'boxes') and (result.boxes is None or len(result.boxes) == 0)):
+                # print(f"Station3-{i+1}: No detections found")
             # Create label dictionary for each result
             payload = self.create_payload_json(result)
             label_dict[filepaths[i]] = payload
@@ -129,6 +138,27 @@ class Model:
         """Create dictionary of labels with binary detection status"""
         label_dict = {}
         
+        if results is None or (hasattr(results, 'boxes') and (results.boxes is None or len(results.boxes) == 0)):
+            payload = {
+                "Closed_Case": {
+                    "Top": {"Expected": 1, "Found": 1},
+                    "Bottom": {"Expected": 1, "Found": 1},
+                    "Front": {"Expected": 1, "Found": 1},
+                    "Back": {"Expected": 1, "Found": 1},
+                    "Left_Side": {"Expected": 1, "Found": 1},
+                    "Right_Side": {"Expected": 1, "Found": 1},
+                    "Empty_Wheel_Well": {"Expected": 1, "Found": 0},
+                    "Foam": {"Expected": 1, "Found": 0},
+                    "Handle": {"Expected": 2, "Found": 0},
+                    "Handle_Ribs": {"Expected": 2, "Found": 0},
+                    "Latch": {"Expected": 2, "Found": 0},
+                    "Latch_Ribs": {"Expected": 2, "Found": 0},
+                    "Wheel_Well_With_Wheel": {"Expected": 2, "Found": 0},
+                    "State": 2
+                }
+            }
+            return payload
+
         # Process each detection from results
         for r in results:
             # Get boxes and confidences from tensor
@@ -202,9 +232,30 @@ class Model:
         # take the median as the final values, and assign it to the fina_result_dict
         final_result_dict = {}
         for key, value in final_results_counter.items():
-            final_result_dict[key] = int(np.median(value))
+            final_result_dict[key] = int(np.max(value))
         # print(final_result_dict)
 
+
+        # # if there are no detections at all,
+        # if all(value == 0 for value in final_result_dict.values()):
+        #     final_payload = {
+        #     "Closed_Case": {
+        #         "Top": {"Expected": 1, "Found": 1},
+        #         "Bottom": {"Expected": 1, "Found": 1},
+        #         "Front": {"Expected": 1, "Found": 1},
+        #         "Back": {"Expected": 1, "Found": 1},
+        #         "Left_Side": {"Expected": 1, "Found": 1},
+        #         "Right_Side": {"Expected": 1, "Found": 1},
+        #         "Empty_Wheel_Well": {"Expected": 1, 0},
+        #         "Foam": {"Expected": 1, "Found": 0},
+        #         "Handle": {"Expected": 2, "Found": 0},
+        #         "Handle_Ribs": {"Expected": 2, "Found": 0},
+        #         "Latch": {"Expected": 2, "Found": 0},
+        #         "Latch_Ribs": {"Expected": 2, "Found": 0},
+        #         "Wheel_Well_With_Wheel": {"Expected": 2, "Found": 0},
+        #         "State": 2
+        #     }
+        # }
 
         final_payload = {
             "Closed_Case": {
@@ -246,7 +297,7 @@ class FileWatcher:
     If there is no processed image in the cache, either you can set the oldest image in all sub folders, or you can expect a manual variable to be set.
     """
     
-    def __init__(self, input_dir, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=0.5):
+    def __init__(self, input_dir, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=0.1):
         """
         Initialize the FileWatcher
         
@@ -274,6 +325,14 @@ class FileWatcher:
         print(f"📁 FileWatcher initialized")
         print(f"   Input directory: {self.input_dir}")
         print(f"   Monitoring subdirectories: {', '.join(self.subdirs)}")
+        # print the 5 files from each subdirectory
+        for subdir in self.subdirs:
+            subdir_path = self.input_dir / subdir
+            images = [f for f in subdir_path.iterdir() if f.is_file()]
+            images_sorted = sorted(images)
+            print(f"   {subdir}: {len(images_sorted)} files")
+            for img in images_sorted[-5:]:
+                print(f"      {img.name}")
         print(f"   Poll interval: {self.poll_interval}s")
     
     def extract_identifier(self, filename):
@@ -317,9 +376,10 @@ class FileWatcher:
         images = [f for f in subdir_path.iterdir() 
                 if f.is_file() and f.suffix in valid_extensions]
         
-        return sorted(images)[-5:]  # Get the last 5 images
+        images_sorted = sorted(images)[-50:]
+        return images_sorted
     
-    def get_all_identifiers_in_subdir(self, subdir):
+    def get_all_files_in_subdir(self, subdir):
         """
         Get all image identifiers in a specific subdirectory
         
@@ -339,6 +399,7 @@ class FileWatcher:
         
         return identifiers
 
+
     def get_latest_common_identifier_in_subdirs(self):
         """
         Find the latest common identifier (image naming format: YYYYMMDD-HHMMSS-NNNNN) in the last 5 images in all subdirectories.
@@ -347,29 +408,47 @@ class FileWatcher:
         """
 
         # create a dict of identifiers with the subdir name as the key
-        identifiers_dict = {subdir: self.get_all_identifiers_in_subdir(subdir) for subdir in self.subdirs}
+        files_dict = {subdir: self.get_all_files_in_subdir(subdir) for subdir in self.subdirs}
 
-        # sort each identifier in ascending order
-        identifiers_sorted = {subdir: sorted(identifiers) for subdir, identifiers in identifiers_dict.items()}
+        # sort each identifier in descending order
+        files_sorted_raw = {subdir: sorted(files, reverse=True) for subdir, files in files_dict.items()}
 
-        latest_identifiers_last = {subdir: identifiers[-1] for subdir, identifiers in identifiers_sorted.items()}
-        latest_identifiers_sequence_last = {subdir: int(latest_identifier.split('-')[-1]) for subdir, latest_identifier in latest_identifiers_last.items()}
-        # find the minimum sequence number
-        min_sequence_number = min(latest_identifiers_sequence_last.values())
+        # Only take the first 20 rows for each subdir
+        files_sorted = {subdir: files_sorted_raw[subdir][:20] for subdir, files in files_sorted_raw.items()}
 
-        # For each subdirectory, find the sequence number that is equal to the minimum sequence number.
-        latest_common_identifier = {}
-        for subdir, identifiers in identifiers_sorted.items():
-            for identifier in identifiers:
-                if int(identifier.split('-')[-1]) == min_sequence_number:
-                    latest_common_identifier[subdir] = identifier
-                    break
-        if len(latest_common_identifier) == len(self.subdirs):
-            return latest_common_identifier
-        else:
-            # print("❌ No common identifier found in the last 5 images in all subdirectories")
-            pass
-        return None
+
+        ############## FIND COMMON BY TIMESTAMP OF THE IMAGE ##############
+        def get_timestamp(image_paths):
+            image_paths_timestamp = []
+            for image_path in image_paths:
+                # Now the naming look like this: YYYYMMDD-HHMMSS
+                timestamp = image_path.split('-')[1]
+                image_paths_timestamp.append(int(timestamp))
+            return image_paths_timestamp
+
+        files_sorted_timestamp = {subdir: get_timestamp(files) for subdir, files in files_sorted.items()}
+        last_files = {subdir: files[0] for subdir, files in files_sorted_timestamp.items()}
+        min_timestamp = min(last_files.values())
+        # print(f"Minimum timestamp: {min_timestamp}")
+
+        ############## FIND COMMON BY TIMESTAMP OF THE IMAGE ##############
+        latest_common_file = {}
+        for subdir, timestamp_list in files_sorted_timestamp.items():
+
+            # IF the length of the timestamp list is less than 3, wait for 6 seconds and try again
+            if len(timestamp_list) < 3:
+                print(f"Waiting for more images to come in...")
+                time.sleep(6)
+                return self.get_latest_common_identifier_in_subdirs()
+            
+            else:
+                timestamps_array = np.array(timestamp_list)
+                timestamps_array_delta = timestamps_array - min_timestamp
+
+                # find the element index that is closes to the zero
+                arg_min = np.argmin(np.abs(timestamps_array_delta))
+                latest_common_file[subdir] = files_sorted[subdir][arg_min]
+        return latest_common_file
         
     
     def get_image_paths_for_identifier(self, identifier):
@@ -384,7 +463,7 @@ class FileWatcher:
         
         return image_paths
     
-    def watch_incoming_images(self, sleep_interval=0.5):
+    def watch_incoming_images(self):
         """
         This function watches the input subdirectories untill a new common identifier is found.
         Once found, it stops the loop, and returns the path of each identifier in each subdirectory as a list.
@@ -393,11 +472,11 @@ class FileWatcher:
         print("--------------------------------"*2)
         print(f"Watching for new common identifier in the input subdirectories")
         print(f"Last processed identifier: {self.last_processed_identifier}")
-        print(f"Sleep interval: {sleep_interval}s")
+        print(f"Sleep interval: {self.poll_interval}s")
         while True:
             latest_common_identifier = self.get_latest_common_identifier_in_subdirs()
-            if latest_common_identifier != self.last_processed_identifier:
-                print(f"New common identifier found: {latest_common_identifier}")
+            if (latest_common_identifier != self.last_processed_identifier) and (latest_common_identifier is not None):
+                print(f"New common files found: {latest_common_identifier}")
                 print(f"Last processed identifier: {self.last_processed_identifier}")
                 # return the path of each identifier in each subdirectory as a list
             # image_paths_dict = {subdir: self.get_image_paths_for_identifier(latest_common_identifier[subdir]) for subdir in self.subdirs}
@@ -410,7 +489,7 @@ class FileWatcher:
                 
             else:
                 pass
-            time.sleep(sleep_interval)
+            time.sleep(self.poll_interval)
 
     def get_status(self):
         """
@@ -565,6 +644,26 @@ class timer:
         elapsed_ms = (end_time - start_time) * 1000
         # print(f"[⏱️] Time taken for {self.func.__name__}: {elapsed_ms:.2f} ms")
 
+
+
+def print_processed_images(processed_images, image_paths):
+        ###### PRINT THE PROCESSED IMAGES ######
+        processed_images["Station3-1"].append(image_paths[0].split("/")[-1])
+        processed_images["Station3-2"].append(image_paths[1].split("/")[-1])
+        processed_images["Station3-3"].append(image_paths[2].split("/")[-1])
+        if len(processed_images["Station3-1"]) > 10:
+            processed_images["Station3-1"] = processed_images["Station3-1"][-10:]
+        if len(processed_images["Station3-2"]) > 10:
+            processed_images["Station3-2"] = processed_images["Station3-2"][-10:]
+        if len(processed_images["Station3-3"]) > 10:
+            processed_images["Station3-3"] = processed_images["Station3-3"][-10:]
+        print("--------------------------------"*2)
+        print("Processed images:")
+        print(f"Station3-1: {processed_images['Station3-1']}")
+        print(f"Station3-2: {processed_images['Station3-2']}")
+        print(f"Station3-3: {processed_images['Station3-3']}")
+        print("--------------------------------"*2)
+
 def main():
     """Main function demonstrating usage of Model and FileWatcher classes"""
     parser = argparse.ArgumentParser(description='YOLOv8 simplified inference')
@@ -579,9 +678,7 @@ def main():
     
     args = parser.parse_args()
 
-    # Load the environment variables
-    from dotenv import load_dotenv
-    load_dotenv('.env')
+
 
     # Initialize the parameters
     weights_path = args.weights
@@ -599,7 +696,7 @@ def main():
 
     # # Initialize the FileWatcher class
     print(f"Initializing FileWatcher with input path: {input_path} and subdirectories: Station3-1, Station3-2, Station3-3")
-    file_watcher = FileWatcher(input_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=0.5)
+    file_watcher = FileWatcher(input_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=0.1)
 
     def timed(label):
         def decorator(func):
@@ -607,7 +704,7 @@ def main():
                 start = time.time()
                 result = func(*args, **kwargs)
                 end = time.time()
-                elapsed = (end - start) * 1000
+                elapsed = (end - start)
                 return result, elapsed
             return wrapper
         return decorator
@@ -629,10 +726,13 @@ def main():
     def timed_broadcast(function_app_connector, final_payload):
         return function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
 
+
+    processed_images = {"Station3-1": [], "Station3-2": [], "Station3-3": []}   # Cache for printing the processed images
+    total_execution_times = []
     while True:
         times = []
-        image_paths = file_watcher.watch_incoming_images()
-        # times.append(("file_watcher.watch_incoming_images", elapsed))
+        image_paths, elapsed = timed_watch_images()
+        times.append(("file_watcher.watch_incoming_images", elapsed))
 
         results, elapsed = timed_process_file(image_paths)
         times.append(("model.process_file", elapsed))
@@ -645,11 +745,23 @@ def main():
         print(f"✅ Payload sent successfully! {result}")
         times.append(("function_app_connector.trigger_broadcast", elapsed))
 
-        print("[⏱️] Execution times (ms):")
+        ###### PRINT THE EXECUTION TIMES ######
+        print("[⏱️] Execution times (s):")
         for label, t in times:
-            print(f"   {label}: {t:.2f} ms")
-        print(f"Total time: {sum(t for _, t in times):.2f} ms")
+            print(f"   {label}: {t:.2f} s")
+        print(f"Total time: {sum(t for _, t in times):.2f} s")
+        total_execution_times.append(sum(t for _, t in times))
+        if len(total_execution_times) > 100:
+            total_execution_times = total_execution_times[-100:]
+        print(f"Last 10 total execution times: {total_execution_times[-10:]}")
+        print(f"Average total execution time (last 100 iterations): {sum(total_execution_times) / len(total_execution_times):.2f} s")
+        print("Current Time:", datetime.now().isoformat(timespec='seconds'))
 
+        ###### PRINT THE PROCESSED IMAGES ######
+        print_processed_images(processed_images, image_paths)
+
+
+#%%
 if __name__ == "__main__":
     main()
 
@@ -700,7 +812,7 @@ docker run --rm -it \
 
 #     # Time model.process_file
 #     start_time = time.time()
-#     results = model.process_file(image_paths, output_base)
+#     results = model.process_file(image_paths)
 #     end_time = time.time()
 #     elapsed_ms = (end_time - start_time) * 1000
 #     print(f"[⏱️] Time taken for model.process_file(): {elapsed_ms:.2f} ms")
@@ -722,3 +834,6 @@ docker run --rm -it \
 #     elapsed_ms = (end_time - start_time) * 1000
 #     print(f"[⏱️] Time taken for function_app_connector.trigger_broadcast(): {elapsed_ms:.2f} ms")
 #     # print(result)
+# # %%
+
+# # %%

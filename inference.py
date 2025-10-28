@@ -40,6 +40,77 @@ except Exception as e:
     print(f"❌ Error loading CUDA libraries: {e}")
 #%%
 
+class CaseFeatures:
+
+    def __init__(self):
+        self.Top = 1
+        self.Bottom = 1
+        self.Front = 1
+        self.Back = 1
+        self.Left_Side = 1
+        self.Right_Side = 1
+        self.Empty_Wheel_Well = 0
+        self.Foam = 0
+        self.Handle = 0
+        self.Handle_Ribs = 0
+        self.Latch = 0
+        self.Latch_Ribs = 0
+        self.Wheel_Well_With_Wheel = 0
+        self.State = 2
+        self.no_detection_counter = 0
+    
+    def update_features(self, features):
+        """Update the features with the new features"""
+        if "Top" in features.keys():
+            self.Top = int(np.max([self.Top, features["Top"]]))
+        if "Bottom" in features.keys():
+            self.Bottom = int(np.max([self.Bottom, features["Bottom"]]))
+        if "Front" in features.keys():
+            self.Front = int(np.max([self.Front, features["Front"]]))
+        if "Back" in features.keys():
+            self.Back = int(np.max([self.Back, features["Back"]]))
+        if "Left_Side" in features.keys():
+            self.Left_Side = int(np.max([self.Left_Side, features["Left_Side"]]))
+        if "Right_Side" in features.keys():
+            self.Right_Side = int(np.max([self.Right_Side, features["Right_Side"]]))
+        if "Empty_Wheel_Well" in features.keys():
+            self.Empty_Wheel_Well = int(np.max([self.Empty_Wheel_Well, features["Empty_Wheel_Well"]]))
+        if "Foam" in features.keys():
+            self.Foam = int(np.max([self.Foam, features["Foam"]]))
+        if "Handle" in features.keys():
+            self.Handle = int(np.max([self.Handle, features["Handle"]]))
+        if "Handle_Ribs" in features.keys():
+            self.Handle_Ribs = int(np.max([self.Handle_Ribs, features["Handle_Ribs"]]))
+        if "Latch" in features.keys():
+            self.Latch = int(np.max([self.Latch, features["Latch"]]))
+        if "Latch_Ribs" in features.keys():
+            self.Latch_Ribs = int(np.max([self.Latch_Ribs, features["Latch_Ribs"]]))
+        if "Wheel_Well_With_Wheel" in features.keys():
+            self.Wheel_Well_With_Wheel = int(np.max([self.Wheel_Well_With_Wheel, features["Wheel_Well_With_Wheel"]]))
+        if "State" in features.keys():
+            self.State = int(np.max([self.State, features["State"]]))
+
+    def to_payload(self):
+        case_payload = {
+            "Closed_Case": {
+            "Top": {"Expected": 1, "Found": self.Top},
+            "Bottom": {"Expected": 1, "Found": self.Bottom},
+            "Front": {"Expected": 1, "Found": self.Front},
+            "Back": {"Expected": 1, "Found": self.Back},
+            "Left_Side": {"Expected": 1, "Found": self.Left_Side},
+            "Right_Side": {"Expected": 1, "Found": self.Right_Side},
+            "Empty_Wheel_Well": {"Expected": 1, "Found": self.Empty_Wheel_Well},
+            "Foam": {"Expected": 1, "Found": self.Foam},
+            "Handle": {"Expected": 2, "Found": self.Handle},
+            "Handle_Ribs": {"Expected": 2, "Found": self.Handle_Ribs},
+            "Latch": {"Expected": 2, "Found": self.Latch},
+            "Latch_Ribs": {"Expected": 2, "Found": self.Latch_Ribs},
+            "Wheel_Well_With_Wheel": {"Expected": 2, "Found": self.Wheel_Well_With_Wheel},
+            "State": self.State
+            }
+        }
+        return case_payload
+
 class Model:
     """YOLOv8 Model class with GPU/CPU detection and processing"""
     
@@ -48,6 +119,7 @@ class Model:
         self.conf_threshold = conf_threshold
         self.device = self._detect_device()
         self.model = self._load_model()
+        self.case_features_obj = CaseFeatures()
         
     def _detect_device(self):
         """Detect and configure the best available device (GPU first, then CPU)"""
@@ -113,168 +185,141 @@ class Model:
             device=self.device  # Ensures GPU is used if available
         )
 
-        label_dict = {}
+        detections_dict = {}
         # Print detection summary
         for i, result in enumerate(results):
             # num_detections = len(result.boxes) if result.boxes is not None else 0
             # print(f"  ✓ Processed: {num_detections} detection(s) found")
+            detections = {}
             if result.boxes is not None and len(result.boxes) > 0:
-                detections = {}
                 for box in result.boxes:
-                    # YOLOv8: box.cls is a tensor/array, so ensure correct extraction
-                    cls = int(box.cls[0]) if hasattr(box.cls, "__getitem__") else int(box.cls)
-                    class_name = self.model.names[cls]
-                    detections[class_name] = detections.get(class_name, 0) + 1
-                # for class_name, count in detections.items():
-                    # print(f"    - {class_name}: {count}")
-            # if result is None or (hasattr(result, 'boxes') and (result.boxes is None or len(result.boxes) == 0)):
-                # print(f"Station3-{i+1}: No detections found")
+                    # Check confidence threshold before adding to detections
+                    confidence = float(box.conf[0]) if hasattr(box.conf, "__getitem__") else float(box.conf)
+                    if confidence >= self.conf_threshold:
+                        # YOLOv8: box.cls is a tensor/array, so ensure correct extraction
+                        cls = int(box.cls[0]) if hasattr(box.cls, "__getitem__") else int(box.cls)
+                        class_name = self.model.names[cls]
+                        detections[class_name] = detections.get(class_name, 0) + 1
             # Create label dictionary for each result
-            payload = self.create_payload_json(result)
-            label_dict[filepaths[i]] = payload
-        return label_dict
+            # payload = self.create_payload_json(result)
+            detections_dict[filepaths[i]] = detections
+        return detections_dict
 
-    def create_payload_json(self, results, threshold=0.80):
-        """Create dictionary of labels with binary detection status"""
-        label_dict = {}
+
+
+    # def create_payload_json(self, results, threshold=0.80):
+    #     """Create dictionary of labels with binary detection status"""
+    #     label_dict = {}
         
-        if results is None or (hasattr(results, 'boxes') and (results.boxes is None or len(results.boxes) == 0)):
-            payload = {
-                "Closed_Case": {
-                    "Top": {"Expected": 1, "Found": 1},
-                    "Bottom": {"Expected": 1, "Found": 1},
-                    "Front": {"Expected": 1, "Found": 1},
-                    "Back": {"Expected": 1, "Found": 1},
-                    "Left_Side": {"Expected": 1, "Found": 1},
-                    "Right_Side": {"Expected": 1, "Found": 1},
-                    "Empty_Wheel_Well": {"Expected": 1, "Found": 0},
-                    "Foam": {"Expected": 1, "Found": 0},
-                    "Handle": {"Expected": 2, "Found": 0},
-                    "Handle_Ribs": {"Expected": 2, "Found": 0},
-                    "Latch": {"Expected": 2, "Found": 0},
-                    "Latch_Ribs": {"Expected": 2, "Found": 0},
-                    "Wheel_Well_With_Wheel": {"Expected": 2, "Found": 0},
-                    "State": 2
-                }
-            }
-            return payload
+    #     if results is None or (hasattr(results, 'boxes') and (results.boxes is None or len(results.boxes) == 0)):
+    #         payload = {
+    #             "Closed_Case": {
+    #                 "Top": {"Expected": 1, "Found": 1},
+    #                 "Bottom": {"Expected": 1, "Found": 1},
+    #                 "Front": {"Expected": 1, "Found": 1},
+    #                 "Back": {"Expected": 1, "Found": 1},
+    #                 "Left_Side": {"Expected": 1, "Found": 1},
+    #                 "Right_Side": {"Expected": 1, "Found": 1},
+    #                 "Empty_Wheel_Well": {"Expected": 1, "Found": 0},
+    #                 "Foam": {"Expected": 1, "Found": 0},
+    #                 "Handle": {"Expected": 2, "Found": 0},
+    #                 "Handle_Ribs": {"Expected": 2, "Found": 0},
+    #                 "Latch": {"Expected": 2, "Found": 0},
+    #                 "Latch_Ribs": {"Expected": 2, "Found": 0},
+    #                 "Wheel_Well_With_Wheel": {"Expected": 2, "Found": 0},
+    #                 "State": 2
+    #             }
+    #         }
+    #         return payload
 
-        # Process each detection from results
-        for r in results:
-            # Get boxes and confidences from tensor
-            boxes = r.boxes
+    #     # Process each detection from results
+    #     for r in results:
+    #         # Get boxes and confidences from tensor
+    #         boxes = r.boxes
             
-            # Get class names from results
-            names = r.names
+    #         # Get class names from results
+    #         names = r.names
             
-            # Initialize all possible labels to 0
-            for class_id, name in names.items():
-                if name not in label_dict:
-                    label_dict[name] = 0
+    #         # Initialize all possible labels to 0
+    #         for class_id, name in names.items():
+    #             if name not in label_dict:
+    #                 label_dict[name] = 0
             
-            # Each box contains class_id and confidence
-            for box in boxes:
-                class_id = int(box.cls)
-                confidence = float(box.conf)
+    #         # Each box contains class_id and confidence
+    #         for box in boxes:
+    #             class_id = int(box.cls)
+    #             confidence = float(box.conf)
                 
-                if confidence >= threshold:
-                    # Get label name from class_id and set to 1
-                    label_name = names[class_id]
-                    label_dict[label_name] = 1
+    #             if confidence >= threshold:
+    #                 # Get label name from class_id and set to 1
+    #                 label_name = names[class_id]
+    #                 label_dict[label_name] = 1
 
-        # print(f"📊 PPE Detection Status (threshold={threshold}):")
-        # for label, status in label_dict.items():
-            # print(f"   {label}: {'✅ Detected' if status else '❌ Not Detected'}")
+    #     # print(f"📊 PPE Detection Status (threshold={threshold}):")
+    #     # for label, status in label_dict.items():
+    #         # print(f"   {label}: {'✅ Detected' if status else '❌ Not Detected'}")
             
-        payload = {
-            "Closed_Case": {
-                "Top": {"Expected": 1, "Found": 1},
-                "Bottom": {"Expected": 1, "Found": 1},
-                "Front": {"Expected": 1, "Found": 1},
-                "Back": {"Expected": 1, "Found": 1},
-                "Left_Side": {"Expected": 1, "Found": 1},
-                "Right_Side": {"Expected": 1, "Found": 1},
-                "Empty_Wheel_Well": {"Expected": 1, "Found": label_dict["Empty_Wheel_Well"]},
-                "Foam": {"Expected": 1, "Found": label_dict["Foam"]},
-                "Handle": {"Expected": 2, "Found": label_dict["Handle"]},
-                "Handle_Ribs": {"Expected": 2, "Found": label_dict["Handle_Ribs"]},
-                "Latch": {"Expected": 2, "Found": label_dict["Latch"]},
-                "Latch_Ribs": {"Expected": 2, "Found": label_dict["Latch_Ribs"]},
-                "Wheel_Well_With_Wheel": {"Expected": 2, "Found": label_dict["Wheel_Well_With_Wheel"]},
-                "State": 2
-            }
-        }
-        return payload
+    #     payload = {
+    #         "Closed_Case": {
+    #             "Top": {"Expected": 1, "Found": 1},
+    #             "Bottom": {"Expected": 1, "Found": 1},
+    #             "Front": {"Expected": 1, "Found": 1},
+    #             "Back": {"Expected": 1, "Found": 1},
+    #             "Left_Side": {"Expected": 1, "Found": 1},
+    #             "Right_Side": {"Expected": 1, "Found": 1},
+    #             "Empty_Wheel_Well": {"Expected": 1, "Found": label_dict["Empty_Wheel_Well"]},
+    #             "Foam": {"Expected": 1, "Found": label_dict["Foam"]},
+    #             "Handle": {"Expected": 2, "Found": label_dict["Handle"]},
+    #             "Handle_Ribs": {"Expected": 2, "Found": label_dict["Handle_Ribs"]},
+    #             "Latch": {"Expected": 2, "Found": label_dict["Latch"]},
+    #             "Latch_Ribs": {"Expected": 2, "Found": label_dict["Latch_Ribs"]},
+    #             "Wheel_Well_With_Wheel": {"Expected": 2, "Found": label_dict["Wheel_Well_With_Wheel"]},
+    #             "State": 2
+    #         }
+    #     }
+    #     return payload
 
-    def results_post_processing(self, results):
+    def results_post_processing(self, detections_dict):
         """
         For the 3 angle camerage view, if the voting is greater than 2, then the result is valid.
         """
         final_results_counter = {}
-
         # Count the number of valid results for each subkey
-        for key, payload in results.items():
-            for subkey, subvalue in payload["Closed_Case"].items():
-                # Check if the subkey is inthe final_results_counter
-                if subkey in final_results_counter:
-                    # print("Adding to existing subkey")
-                    # print(f"Adding new subkey: {subkey}")
-                    # print(f"Value: {subvalue['Found']}")
-                    final_results_counter[subkey].append(subvalue['Found'])
-                else:
-                    if subkey != "State":
-                        # print("Initializing new subkey")
-                        # print(f"Adding new subkey: {subkey}")
-                        # print(f"Value: {subvalue['Found']}")
+        detection_per_camera = 0
+        for key, detection in detections_dict.items():
+            
+            # if detection is empty, then skip
+            if not detection:
+                detection_per_camera += 1
+                continue
 
-                        final_results_counter[subkey] = [subvalue['Found']]
+            # if detection is not empty, then process the detections
+            else:
+                for subkey, subvalue in detection.items():
+                    # Check if the subkey is inthe final_results_counter
+                    if subkey in final_results_counter:
+                        final_results_counter[subkey].append(subvalue)
+                    else:
+                        final_results_counter[subkey] = [subvalue]
 
         # take the median as the final values, and assign it to the fina_result_dict
         final_result_dict = {}
         for key, value in final_results_counter.items():
             final_result_dict[key] = int(np.max(value))
-        # print(final_result_dict)
 
+        self.case_features_obj.update_features(final_result_dict)
+        
+        # IF none of the cameras have detection.
+        if detection_per_camera == 3: # if all 3 cameras have detections, then increment the no_detection_counter
+            self.case_features_obj.no_detection_counter += 1
+            # If the no_detection_counter is greater than 10, then reset the case_features_obj
+            if self.case_features_obj.no_detection_counter > 10:
+                self.case_features_obj = CaseFeatures()
+        else: # if there is a detection, then reset the no_detection_counter
+            self.case_features_obj.no_detection_counter = 0
 
-        # # if there are no detections at all,
-        # if all(value == 0 for value in final_result_dict.values()):
-        #     final_payload = {
-        #     "Closed_Case": {
-        #         "Top": {"Expected": 1, "Found": 1},
-        #         "Bottom": {"Expected": 1, "Found": 1},
-        #         "Front": {"Expected": 1, "Found": 1},
-        #         "Back": {"Expected": 1, "Found": 1},
-        #         "Left_Side": {"Expected": 1, "Found": 1},
-        #         "Right_Side": {"Expected": 1, "Found": 1},
-        #         "Empty_Wheel_Well": {"Expected": 1, 0},
-        #         "Foam": {"Expected": 1, "Found": 0},
-        #         "Handle": {"Expected": 2, "Found": 0},
-        #         "Handle_Ribs": {"Expected": 2, "Found": 0},
-        #         "Latch": {"Expected": 2, "Found": 0},
-        #         "Latch_Ribs": {"Expected": 2, "Found": 0},
-        #         "Wheel_Well_With_Wheel": {"Expected": 2, "Found": 0},
-        #         "State": 2
-        #     }
-        # }
-
-        final_payload = {
-            "Closed_Case": {
-                "Top": {"Expected": 1, "Found": 1},
-                "Bottom": {"Expected": 1, "Found": 1},
-                "Front": {"Expected": 1, "Found": 1},
-                "Back": {"Expected": 1, "Found": 1},
-                "Left_Side": {"Expected": 1, "Found": 1},
-                "Right_Side": {"Expected": 1, "Found": 1},
-                "Empty_Wheel_Well": {"Expected": 1, "Found": final_result_dict["Empty_Wheel_Well"]},
-                "Foam": {"Expected": 1, "Found": final_result_dict["Foam"]},
-                "Handle": {"Expected": 2, "Found": final_result_dict["Handle"]},
-                "Handle_Ribs": {"Expected": 2, "Found": final_result_dict["Handle_Ribs"]},
-                "Latch": {"Expected": 2, "Found": final_result_dict["Latch"]},
-                "Latch_Ribs": {"Expected": 2, "Found": final_result_dict["Latch_Ribs"]},
-                "Wheel_Well_With_Wheel": {"Expected": 2, "Found": final_result_dict["Wheel_Well_With_Wheel"]},
-                "State": 2
-            }
-        }
+        print(f"No detection counter: {self.case_features_obj.no_detection_counter}")
+        final_payload = self.case_features_obj.to_payload()
         return final_payload
 
 
@@ -837,3 +882,5 @@ docker run --rm -it \
 # # %%
 
 # # %%
+
+# %%

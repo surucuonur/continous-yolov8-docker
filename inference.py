@@ -12,6 +12,7 @@ To run the python script: python inference.py --weights=./weights/best.pt --sour
 """
 #%%
 from ultralytics import YOLO
+from push_to_blob import AsyncBlobUploader
 import numpy as np
 from scipy.stats import mode
 import argparse
@@ -665,6 +666,10 @@ def main():
     print(f"Initializing FunctionAppConnector")
     function_app_connector = FunctionAppConnector()
 
+    # Initialize the AsyncBlobUploader (after FunctionAppConnector initialization)
+    print(f"Initializing AsyncBlobUploader")
+    blob_uploader = AsyncBlobUploader(num_workers=3, max_queue_size=100)
+
     # # Initialize the FileWatcher class
     print(f"Initializing FileWatcher with input path: {input_path} and subdirectories: Station3-1, Station3-2, Station3-3")
     file_watcher = FileWatcher(input_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=0.1)
@@ -697,7 +702,6 @@ def main():
     def timed_broadcast(function_app_connector, final_payload):
         return function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
 
-
     processed_images = {"Station3-1": [], "Station3-2": [], "Station3-3": []}   # Cache for printing the processed images
     total_execution_times = []
     while True:
@@ -712,9 +716,42 @@ def main():
         # print(f"✅ Final payload created: {final_payload}")
         times.append(("model.results_post_processing", elapsed))
 
-        result, elapsed = timed_broadcast(function_app_connector, final_payload)
-        print(f"✅ Payload sent successfully! {result}")
+        response_payload, elapsed = timed_broadcast(function_app_connector, final_payload)
+        print(f"✅ Payload sent successfully! {response_payload}")
         times.append(("function_app_connector.trigger_broadcast", elapsed))
+
+
+
+        #########################################################
+        ######## Blob Uploader ##################################
+        #########################################################
+        # Check if there are any detections
+        has_detections = any(len(detections) > 0 for detections in results.values())
+        
+        # Queue images for async upload/deletion (non-blocking!)
+        start_queue = time.time()
+        camera_ids = ["Station3-1", "Station3-2", "Station3-3"]
+        blob_uploader.queue_images(image_paths, camera_ids, has_detections)
+        elapsed_queue = time.time() - start_queue
+        times.append(("blob_uploader.queue_images", elapsed_queue))
+        
+        if has_detections:
+            print(f"🔍 Detections found - images queued for upload")
+        else:
+            print(f"ℹ️ No detections - images queued for deletion only")
+        
+        # Print queue status
+        queue_size = blob_uploader.get_queue_size()
+        if queue_size > 0:
+            print(f"📦 Upload queue size: {queue_size}")
+        
+        # Print upload statistics periodically
+        stats = blob_uploader.get_stats()
+        print(f"📊 Upload Stats - Queued: {stats['total_queued']}, Uploaded: {stats['total_uploaded']}, Deleted: {stats['total_deleted']}")
+        #########################################################
+        ######## Blob Uploader ##################################
+        #########################################################
+
 
         ###### PRINT THE EXECUTION TIMES ######
         print("[⏱️] Execution times (s):")
@@ -733,8 +770,8 @@ def main():
 
 
 #%%
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
 
 '''
 docker run --rm -it \
@@ -751,62 +788,64 @@ docker run --rm -it \
 
 #### TESTING ####
 
-# # Load the environment variables
-# from dotenv import load_dotenv
-# load_dotenv('.env')
+# Load the environment variables
+from dotenv import load_dotenv
+load_dotenv('.env')
 
-# # Initialize the parameters
-# weights_path = "./weights/best.pt"
-# source_path = "./Input"
-# conf = 0.85
-# output_base = "./Output"
+# Initialize the parameters
+weights_path = "./weights/best.pt"
+source_path = "./Input"
+conf = 0.85
+output_base = "./Output"
 
-# # # Initialize the Model class
-# model = Model(weights_path, conf)
+# # Initialize the Model class
+model = Model(weights_path, conf)
 
-# # Initialize the FunctionAppConnector class
-# function_app_connector = FunctionAppConnector()
+# Initialize the FunctionAppConnector class
+function_app_connector = FunctionAppConnector()
 
-# # # Initialize the FileWatcher class
-# file_watcher = FileWatcher(source_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=1.0)
+# # Initialize the FileWatcher class
+file_watcher = FileWatcher(source_path, subdirs=["Station3-1", "Station3-2", "Station3-3"], poll_interval=1.0)
 
 
 
-# while True:
-#     # Time file_watcher.watch_incoming_images()
-#     start_time = time.time()
-#     image_paths = file_watcher.watch_incoming_images()
-#     end_time = time.time()
-#     elapsed_ms = (end_time - start_time) * 1000
-#     print(f"[⏱️] Time taken for file_watcher.watch_incoming_images(): {elapsed_ms:.2f} ms")
-#     # print(image_paths)
+while True:
+    # Time file_watcher.watch_incoming_images()
+    start_time = time.time()
+    image_paths = file_watcher.watch_incoming_images()
+    end_time = time.time()
+    elapsed_ms = (end_time - start_time) * 1000
+    print(f"[⏱️] Time taken for file_watcher.watch_incoming_images(): {elapsed_ms:.2f} ms")
+    # print(image_paths)
 
-#     # Time model.process_file
-#     start_time = time.time()
-#     results = model.process_file(image_paths)
-#     end_time = time.time()
-#     elapsed_ms = (end_time - start_time) * 1000
-#     print(f"[⏱️] Time taken for model.process_file(): {elapsed_ms:.2f} ms")
-#     # print(results)
+    # Time model.process_file
+    start_time = time.time()
+    results = model.process_file(image_paths)
+    end_time = time.time()
+    elapsed_ms = (end_time - start_time) * 1000
+    print(f"[⏱️] Time taken for model.process_file(): {elapsed_ms:.2f} ms")
+    # print(results)
+    # if the results (dict) is full empty for all keys.
+    if_detection_exists = all({key: len(detections) == 0 for key, detections in results.items()})
 
-#     # Time model.results_post_processing
-#     start_time = time.time()
-#     model = Model(weights_path, conf)
-#     final_payload = model.results_post_processing(results)
-#     end_time = time.time()
-#     elapsed_ms = (end_time - start_time) * 1000
-#     print(f"[⏱️] Time taken for model.results_post_processing(): {elapsed_ms:.2f} ms")
-#     # print(final_payload)
+    # Time model.results_post_processing
+    start_time = time.time()
+    model = Model(weights_path, conf)
+    final_payload = model.results_post_processing(results)
+    end_time = time.time()
+    elapsed_ms = (end_time - start_time) * 1000
+    print(f"[⏱️] Time taken for model.results_post_processing(): {elapsed_ms:.2f} ms")
+    # print(final_payload)
 
-#     # Time function_app_connector.trigger_broadcast
-#     start_time = time.time()
-#     result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
-#     end_time = time.time()
-#     elapsed_ms = (end_time - start_time) * 1000
-#     print(f"[⏱️] Time taken for function_app_connector.trigger_broadcast(): {elapsed_ms:.2f} ms")
-#     # print(result)
-# # %%
+    # Time function_app_connector.trigger_broadcast
+    start_time = time.time()
+    result = function_app_connector.trigger_broadcast(message="PPE Detection completed", data=final_payload)
+    end_time = time.time()
+    elapsed_ms = (end_time - start_time) * 1000
+    print(f"[⏱️] Time taken for function_app_connector.trigger_broadcast(): {elapsed_ms:.2f} ms")
+    # print(result)
+# %%
 
-# # %%
+# %%
 
 # %%

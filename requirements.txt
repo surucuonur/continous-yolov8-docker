@@ -1,3 +1,5 @@
 ultralytics
 numpy
 torch
+azure-iot-device
+azure-storage-blob
